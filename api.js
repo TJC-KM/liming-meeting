@@ -1,13 +1,19 @@
-// 資料層：可在 mock / 真實 API 之間切換
+// 資料層
 //
-// 部署 Cloudflare Worker 之後，把 USE_MOCK 設為 false，
-// 並把 API_URL 改成你的 Worker endpoint。
+// 兩個後端：
+//   1. Cloudflare Worker（讀 Notion）— 列表 + 詳細
+//   2. GAS Web App（讀 Drive + 觸發轉檔）— 列出未處理錄音 / 處理單一檔案
+//
+// 部署後填入 GAS_URL。
 
 const CONFIG = {
   USE_MOCK: false,
   API_URL: 'https://church-meeting-api.c3012312.workers.dev',
+  // 部署 GAS Web App 後，把 .../exec 網址填到這裡。留空字串則前端不會顯示「處理」相關功能。
+  GAS_URL: '',
 };
 
+// === Notion 端（Worker proxy）===
 const api = {
   async listMeetings() {
     if (CONFIG.USE_MOCK) {
@@ -16,7 +22,7 @@ const api = {
       return r.json();
     }
     const r = await fetch(`${CONFIG.API_URL}/meetings`);
-    if (!r.ok) throw new Error(`API 錯誤：${r.status}`);
+    if (!r.ok) throw new Error(`Worker 錯誤：${r.status}`);
     return r.json();
   },
 
@@ -30,12 +36,42 @@ const api = {
       return m;
     }
     const r = await fetch(`${CONFIG.API_URL}/meetings/${encodeURIComponent(id)}`);
-    if (!r.ok) throw new Error(`API 錯誤：${r.status}`);
+    if (!r.ok) throw new Error(`Worker 錯誤：${r.status}`);
     return r.json();
   },
 };
 
-// 共用工具
+// === GAS 端（Drive 掃描 + 處理觸發）===
+const gasApi = {
+  enabled() {
+    return !!CONFIG.GAS_URL;
+  },
+
+  async _post(payload) {
+    if (!CONFIG.GAS_URL) throw new Error('GAS_URL 未設定');
+    const body = new URLSearchParams({ data: JSON.stringify(payload) });
+    const r = await fetch(CONFIG.GAS_URL, {
+      method: 'POST',
+      body: body.toString(),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      redirect: 'follow',
+    });
+    if (!r.ok) throw new Error(`GAS HTTP ${r.status}`);
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    return data;
+  },
+
+  async listUnprocessed() {
+    return this._post({ action: 'list' });
+  },
+
+  async process(date, type) {
+    return this._post({ action: 'process', date: date, type: type });
+  },
+};
+
+// === 共用工具 ===
 const ThemeManager = {
   KEY: 'church-meeting-theme',
   get() {
@@ -43,9 +79,7 @@ const ThemeManager = {
     if (url && ['adult', 'senior', 'kids'].includes(url)) return url;
     return localStorage.getItem(this.KEY) || 'adult';
   },
-  set(t) {
-    localStorage.setItem(this.KEY, t);
-  },
+  set(t) { localStorage.setItem(this.KEY, t); },
   apply(t, containerId) {
     const el = document.getElementById(containerId);
     if (el) el.className = 'container ' + (t === 'adult' ? '' : t);
@@ -77,7 +111,7 @@ function bindThemeSwitcher(containerId, onChange) {
   });
 }
 
-// 解析參考經文：每節以空行分隔，每節三行（reference / chinese / english）
+// 解析參考經文：每節以空行分隔，每節三行
 function parseVerses(text) {
   if (!text) return [];
   return text.split(/\n\s*\n/).map(block => {
@@ -105,3 +139,5 @@ function formatDate(iso) {
     raw: dt,
   };
 }
+
+const DOW_NAMES = ['日', '一', '二', '三', '四', '五', '六'];

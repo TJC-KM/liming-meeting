@@ -66,9 +66,22 @@ a{color:inherit;text-decoration:none}
 /* === MEETING LIST === */
 .list{display:flex;flex-direction:column;gap:6px}
 
-.row{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--radius);cursor:pointer;transition:all .12s}
-.row:hover{border-color:var(--bd2);background:var(--bg2)}
-.row.future{border-left:3px solid var(--warn)}
+.row{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--radius);transition:all .12s}
+.row-clickable{cursor:pointer}
+.row-clickable:hover{border-color:var(--bd2);background:var(--bg2)}
+.row-static{cursor:default;opacity:.7}
+.row-pending{border-left:3px solid var(--warn);background:var(--warn-bg)}
+.row-pending .info-title{color:var(--warn-tx)}
+.row-pending.row-clickable:hover{filter:brightness(.97)}
+.row-future{border-left:3px solid var(--accent);opacity:.85}
+.row-empty{opacity:.5}
+.row-processing{cursor:wait;background:var(--bg2)}
+.row-processing .arrow{display:none}
+.info-title-empty{font-weight:400;color:var(--tx2)}
+.file-size{font-size:11px;color:var(--tx3)}
+.badge-pending{background:var(--warn-bg);color:var(--warn-tx);border:1px solid var(--warn)}
+.badge-future{background:var(--accent-bg);color:var(--accent-tx)}
+.badge-empty{background:var(--bg3);color:var(--tx3)}
 .date-col{min-width:42px;text-align:center;flex-shrink:0}
 .date-day{font-size:20px;font-weight:700;line-height:1.1}
 .date-mon{font-size:11px;color:var(--tx2)}
