@@ -61,12 +61,54 @@ const gasApi = {
     return data;
   },
 
-  async listUnprocessed() {
-    return this._post({ action: 'list' });
+  // 取得指定年月的錄音檔清單（推薦用法，比掃整個 Drive 快上百倍）
+  // 若不傳 year/month，預設只回近 30 天上傳的
+  async listUnprocessed(year, month) {
+    const payload = { action: 'list' };
+    if (year && month) {
+      payload.year = year;
+      payload.month = month;
+    }
+    return this._post(payload);
   },
 
   async process(date, type) {
     return this._post({ action: 'process', date: date, type: type });
+  },
+};
+
+// === 客戶端快取（sessionStorage，5 分鐘 TTL）===
+const DriveCache = {
+  TTL_MS: 5 * 60 * 1000,
+  _key(year, month) { return `drive_${year}_${month}`; },
+
+  get(year, month) {
+    try {
+      const raw = sessionStorage.getItem(this._key(year, month));
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (Date.now() - obj.t > this.TTL_MS) return null;
+      return obj.files;
+    } catch (e) { return null; }
+  },
+
+  set(year, month, files) {
+    try {
+      sessionStorage.setItem(this._key(year, month), JSON.stringify({ t: Date.now(), files }));
+    } catch (e) { /* sessionStorage 滿了就略過 */ }
+  },
+
+  invalidate(year, month) {
+    try { sessionStorage.removeItem(this._key(year, month)); } catch (e) {}
+  },
+
+  invalidateAll() {
+    try {
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const key = sessionStorage.key(i);
+        if (key && key.startsWith('drive_')) sessionStorage.removeItem(key);
+      }
+    } catch (e) {}
   },
 };
 

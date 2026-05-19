@@ -1,9 +1,7 @@
 // 列表頁：行事曆視圖
-// 每個月顯示所有預期聚會的時段（週二/三/五晚 + 安息日上下午）
-// 每列三種狀態：filled (有 Notion) / pending (Drive 有錄音待處理) / empty (預期但無資料)
+// Notion 資料一次抓全部，Drive 資料按月份懶載入（搭配 sessionStorage 快取）
 
 const SCHEDULE = {
-  // dow -> 預期類型陣列
   2: ['週二晚間'],
   3: ['週三晚間'],
   5: ['週五晚間'],
@@ -14,15 +12,16 @@ const ALL_TYPES = ['週二晚間', '週三晚間', '週五晚間', '安息日上
 
 var state = {
   notionMeetings: [],
-  driveFiles: [],
+  driveFiles: [],           // 目前選擇月份的 Drive 檔案
   filter: 'all',
   sq: '',
   sy: null,
-  sm: null,           // null = 全年; 0-11 = 月份
+  sm: null,                 // null = 全年；0-11 = 月份
   theme: ThemeManager.get(),
   loading: true,
+  loadingDrive: false,
   driveError: null,
-  processing: {},     // key = `${date}_${type}`, value = true while processing
+  processing: {},
 };
 
 function init() {
@@ -30,20 +29,16 @@ function init() {
   ThemeManager.apply(state.theme, 'app');
   bindThemeSwitcher('app', function (t) { state.theme = t; render(); });
 
-  loadAll();
+  loadInitial();
 }
 
-async function loadAll() {
+async function loadInitial() {
   state.loading = true;
   render();
 
-  // 同時抓 Notion + GAS（GAS 沒設就跳過）
-  const tasks = [api.listMeetings()];
-  if (gasApi.enabled()) tasks.push(gasApi.listUnprocessed().catch(e => ({ error: e.message })));
-
   try {
-    const results = await Promise.all(tasks);
-    state.notionMeetings = (results[0].meetings || []).map(function (m) {
+    const result = await api.listMeetings();
+    state.notionMeetings = (result.meetings || []).map(function (m) {
       const d = formatDate(m.date);
       return Object.assign({}, m, {
         year: d.y, month: d.m, day: d.d, dow: d.dow,
@@ -51,31 +46,78 @@ async function loadAll() {
       });
     });
 
-    if (results[1]) {
-      if (results[1].error) {
-        state.driveError = results[1].error;
-        state.driveFiles = [];
-      } else {
-        state.driveFiles = (results[1].files || []).filter(f => f.parseable);
-      }
-    }
-
-    // 預設選擇本月
+    // 預設選擇當月
     const now = new Date();
     state.sy = now.getFullYear();
     state.sm = now.getMonth();
+    state.loading = false;
+    render();  // Notion 資料先顯示
+
+    // 然後背景載入當月的 Drive 資料
+    loadDriveForMonth(state.sy, state.sm);
   } catch (err) {
+    state.loading = false;
     document.getElementById('root').innerHTML = '<div class="empty">載入失敗：' + err.message + '</div>';
+  }
+}
+
+async function loadDriveForMonth(year, month0) {
+  if (!gasApi.enabled()) return;
+
+  const m1 = month0 + 1;  // 1-12
+
+  // 先看快取
+  const cached = DriveCache.get(year, m1);
+  if (cached) {
+    state.driveFiles = cached.filter(f => f.parseable);
+    state.loadingDrive = false;
+    state.driveError = null;
+    render();
     return;
   }
 
-  state.loading = false;
+  state.loadingDrive = true;
+  state.driveError = null;
   render();
+
+  try {
+    const result = await gasApi.listUnprocessed(year, m1);
+    const files = result.files || [];
+    DriveCache.set(year, m1, files);
+    // 確認使用者沒切到其他月份才更新
+    if (state.sy === year && state.sm === month0) {
+      state.driveFiles = files.filter(f => f.parseable);
+      state.loadingDrive = false;
+      render();
+    }
+  } catch (err) {
+    if (state.sy === year && state.sm === month0) {
+      state.driveError = err.message;
+      state.loadingDrive = false;
+      render();
+    }
+  }
 }
 
-// 為指定年月生成所有預期 row
+function selectMonth(year, month0) {
+  state.sy = year;
+  state.sm = month0;
+  state.driveFiles = [];  // 清舊資料
+  render();
+  if (month0 !== null) loadDriveForMonth(year, month0);
+}
+
+function selectYear(year) {
+  state.sy = year;
+  state.sm = null;
+  state.driveFiles = [];
+  render();
+  // 全年模式不抓 Drive
+}
+
+// === 行事曆生成 ===
+
 function buildRowsForMonth(year, month0) {
-  // month0: 0-11
   const rows = [];
   const daysInMonth = new Date(year, month0 + 1, 0).getDate();
   for (let d = 1; d <= daysInMonth; d++) {
@@ -89,31 +131,25 @@ function buildRowsForMonth(year, month0) {
   return rows;
 }
 
-// 把預期 row 對應到實際資料（Notion / Drive）
 function enrichRow(slot) {
   const dateKey = `${slot.year}-${pad2(slot.month)}-${pad2(slot.day)}`;
-  const dateStr = `${slot.year}-${pad2(slot.month)}-${pad2(slot.day)}`;
 
-  // 找 Notion 紀錄
   const notion = state.notionMeetings.find(function (m) {
     return m.dateKey === dateKey && m.type === slot.type;
   });
   if (notion) return Object.assign({}, slot, notion, { _state: 'filled' });
 
-  // 找 Drive 錄音
   const drive = state.driveFiles.find(function (f) {
-    return f.date === dateStr && f.type === slot.type;
+    return f.date === dateKey && f.type === slot.type;
   });
   if (drive) return Object.assign({}, slot, { _state: 'pending', driveFile: drive });
 
-  // 預期但無資料
   const now = new Date();
   const slotDate = new Date(slot.year, slot.month - 1, slot.day);
   const isFuture = slotDate > now;
   return Object.assign({}, slot, { _state: isFuture ? 'future' : 'empty' });
 }
 
-// 加入「特殊事件」：Notion 內有但不在預期排程的紀錄（例如主日聚會）
 function addSpecialEvents(rows, year, month0) {
   const seen = new Set(rows.filter(r => r.id).map(r => r.id));
   state.notionMeetings.forEach(function (m) {
@@ -133,15 +169,12 @@ function getRows() {
     rows = buildRowsForMonth(state.sy, state.sm).map(enrichRow);
     addSpecialEvents(rows, state.sy, state.sm);
   } else {
-    // 全年 mode：12 個月併在一起
-    for (let m = 0; m < 12; m++) {
-      const monthRows = buildRowsForMonth(state.sy, m).map(enrichRow);
-      addSpecialEvents(monthRows, state.sy, m);
-      rows = rows.concat(monthRows);
-    }
+    // 全年模式：只顯示 Notion 既有的紀錄（不顯示空 slot，避免 12 個月 × 28 slot 太多）
+    rows = state.notionMeetings
+      .filter(m => m.year === state.sy)
+      .map(m => Object.assign({}, m, { _state: 'filled' }));
   }
 
-  // 排序：日期降冪，同日依類型
   rows.sort(function (a, b) {
     if (a.year !== b.year) return b.year - a.year;
     if (a.month !== b.month) return b.month - a.month;
@@ -149,7 +182,6 @@ function getRows() {
     return ALL_TYPES.indexOf(a.type) - ALL_TYPES.indexOf(b.type);
   });
 
-  // 套用篩選
   if (state.filter !== 'all') {
     rows = rows.filter(r => r.type === state.filter);
   }
@@ -167,23 +199,13 @@ function getRows() {
 function getYears() {
   const set = new Set([new Date().getFullYear()]);
   state.notionMeetings.forEach(m => m.year && set.add(m.year));
-  state.driveFiles.forEach(f => {
-    if (f.date) set.add(parseInt(f.date.substring(0, 4)));
-  });
   return Array.from(set).sort((a, b) => b - a);
 }
 
 function getMonthCounts() {
-  // 各月有「有資料」(filled or pending) 的數量
   const c = []; for (let i = 0; i < 12; i++) c.push(0);
   state.notionMeetings.forEach(function (m) {
     if (m.year === state.sy && m.month) c[m.month - 1]++;
-  });
-  state.driveFiles.forEach(function (f) {
-    if (!f.date) return;
-    const yr = parseInt(f.date.substring(0, 4));
-    const mo = parseInt(f.date.substring(5, 7));
-    if (yr === state.sy) c[mo - 1]++;
   });
   return c;
 }
@@ -203,18 +225,15 @@ function render() {
 
   let h = '';
 
-  // Search
   h += '<div class="search-wrap"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
   h += '<input class="search" type="text" placeholder="搜尋主題、講員..." value="' + escapeAttr(state.sq) + '" id="si"></div>';
 
-  // Type filters
   h += '<div class="filters" id="ft"><button class="chip ' + (state.filter === 'all' ? 'active' : '') + '" data-f="all">全部</button>';
   ALL_TYPES.forEach(function (t) {
     h += '<button class="chip ' + (state.filter === t ? 'active' : '') + '" data-f="' + t + '">' + t + '</button>';
   });
   h += '</div>';
 
-  // Year nav
   if (years.length > 0) {
     h += '<div class="nav-row" id="yn"><span class="nav-label">年份</span>';
     years.forEach(function (y) {
@@ -223,7 +242,6 @@ function render() {
     h += '</div>';
   }
 
-  // Month nav
   h += '<div class="nav-row" id="mn"><span class="nav-label">月份</span><button class="nav-btn ' + (state.sm === null ? 'active' : '') + '" data-m="x">全年</button>';
   for (let i = 11; i >= 0; i--) {
     h += '<button class="nav-btn ' + (state.sm === i ? 'active' : '') + '" data-m="' + i + '">' + (i + 1) + '月';
@@ -232,19 +250,24 @@ function render() {
   }
   h += '</div>';
 
-  // Stats
   h += '<div class="stats">';
-  h += '<span class="s-item">本月 <strong>' + rows.length + '</strong> 場聚會</span>';
-  h += '<span class="s-item"><span class="dot-pub"></span>已紀錄 ' + filled + '</span>';
-  if (gasApi.enabled()) {
-    h += '<span class="s-item"><span class="dot-up"></span>待處理 ' + pending + '</span>';
+  if (state.sm !== null) {
+    h += '<span class="s-item">本月 <strong>' + rows.length + '</strong> 場聚會</span>';
+  } else {
+    h += '<span class="s-item">全年 <strong>' + rows.length + '</strong> 筆紀錄</span>';
   }
-  if (state.driveError) {
-    h += '<span class="s-item" style="color:var(--warn-tx)">⚠ Drive 連線失敗：' + escapeHtml(state.driveError) + '</span>';
+  h += '<span class="s-item"><span class="dot-pub"></span>已紀錄 ' + filled + '</span>';
+  if (gasApi.enabled() && state.sm !== null) {
+    if (state.loadingDrive) {
+      h += '<span class="s-item" style="color:var(--tx3)">⏳ 載入錄音檔...</span>';
+    } else if (state.driveError) {
+      h += '<span class="s-item" style="color:var(--warn-tx)">⚠ 錄音檔載入失敗：' + escapeHtml(state.driveError) + '</span>';
+    } else {
+      h += '<span class="s-item"><span class="dot-up"></span>待處理 ' + pending + '</span>';
+    }
   }
   h += '</div>';
 
-  // List
   if (rows.length === 0) {
     h += '<div class="empty">找不到符合條件的聚會紀錄</div>';
   } else {
@@ -295,7 +318,6 @@ function renderRow(r) {
   h += `<div class="date-col"><div class="date-day">${r.day}</div><div class="date-mon">${r.month}月</div></div>`;
   h += '<div class="info">';
 
-  // 標題：filled 用 Notion topic；pending 用檔名解析出的 topic；其他用聚會類型作 placeholder
   const displayTopic = (st === 'filled' ? r.topic : null)
                     || (r.driveFile ? r.driveFile.topic : null);
 
@@ -305,7 +327,6 @@ function renderRow(r) {
     h += `<div class="info-title info-title-empty">${escapeHtml(r.type)}</div>`;
   }
 
-  // 講員：filled 用 Notion speaker，pending 用檔名解析出的 speaker
   const displaySpeaker = (st === 'filled' ? r.speaker : null)
                       || (r.driveFile ? r.driveFile.speaker : null);
 
@@ -337,15 +358,14 @@ function bindEvents() {
   if (yn) yn.addEventListener('click', function (e) {
     const b = e.target.closest('.nav-btn');
     if (!b) return;
-    state.sy = parseInt(b.dataset.y); state.sm = null; render();
+    selectYear(parseInt(b.dataset.y));
   });
 
   const mn = document.getElementById('mn');
   if (mn) mn.addEventListener('click', function (e) {
     const b = e.target.closest('.nav-btn');
     if (!b) return;
-    state.sm = b.dataset.m === 'x' ? null : parseInt(b.dataset.m);
-    render();
+    selectMonth(state.sy, b.dataset.m === 'x' ? null : parseInt(b.dataset.m));
   });
 
   const ml = document.getElementById('ml');
@@ -366,7 +386,6 @@ async function handleProcess(date, type) {
   const key = `${date}_${type}`;
   if (state.processing[key]) return;
 
-  // 從 driveFiles 找對應檔案，把講題與講員秀給使用者確認
   const file = state.driveFiles.find(f => f.date === date && f.type === type);
   const topic = file ? file.topic : '';
   const speaker = file ? file.speaker : '';
@@ -388,7 +407,18 @@ async function handleProcess(date, type) {
     const result = await gasApi.process(date, type);
     if (result.success) {
       alert(`完成！「${result.topic}」已建立 Notion 草稿，請至 Notion 校稿。`);
-      await loadAll();
+      // 處理完之後當月快取失效（待處理可能變已紀錄）
+      DriveCache.invalidate(state.sy, state.sm + 1);
+      // 重新抓 Notion 與 Drive
+      const noResult = await api.listMeetings();
+      state.notionMeetings = (noResult.meetings || []).map(function (m) {
+        const d = formatDate(m.date);
+        return Object.assign({}, m, {
+          year: d.y, month: d.m, day: d.d, dow: d.dow,
+          dateKey: m.date ? m.date.substring(0, 10) : '',
+        });
+      });
+      await loadDriveForMonth(state.sy, state.sm);
     } else {
       throw new Error(result.error || '未知錯誤');
     }
