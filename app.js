@@ -389,13 +389,16 @@ async function handleProcess(date, type) {
   const file = state.driveFiles.find(f => f.date === date && f.type === type);
   const topic = file ? file.topic : '';
   const speaker = file ? file.speaker : '';
+  const sizeMB = file ? file.sizeMB : null;
 
+  const estMin = sizeMB ? Math.max(1, Math.round(sizeMB / 10)) : 2;
   const promptLines = [
     `處理「${topic}」${speaker ? '(' + speaker + ')' : ''}？`,
     '',
-    `日期：${date} (${type})`,
+    `日期：${date} (${type})${sizeMB ? '，檔案 ' + sizeMB + ' MB' : ''}`,
     '',
-    '會送給 Gemini 整理為重點與經文，預計 1-2 分鐘。完成後會自動建立 Notion 草稿。',
+    `會在背景送 Gemini 整理為重點與經文，預估 ${estMin}-${estMin * 2} 分鐘。`,
+    '完成後 Notion 會出現新草稿，前端會自動偵測並更新。',
   ];
   const ok = confirm(promptLines.join('\n'));
   if (!ok) return;
@@ -404,29 +407,60 @@ async function handleProcess(date, type) {
   render();
 
   try {
+    // 1. 送出 queue 請求（立刻回應）
     const result = await gasApi.process(date, type);
-    if (result.success) {
-      alert(`完成！「${result.topic}」已建立 Notion 草稿，請至 Notion 校稿。`);
-      // 處理完之後當月快取失效（待處理可能變已紀錄）
-      DriveCache.invalidate(state.sy, state.sm + 1);
-      // 重新抓 Notion 與 Drive
-      const noResult = await api.listMeetings();
-      state.notionMeetings = (noResult.meetings || []).map(function (m) {
-        const d = formatDate(m.date);
-        return Object.assign({}, m, {
-          year: d.y, month: d.m, day: d.d, dow: d.dow,
-          dateKey: m.date ? m.date.substring(0, 10) : '',
-        });
-      });
-      await loadDriveForMonth(state.sy, state.sm);
-    } else {
-      throw new Error(result.error || '未知錯誤');
+    if (!result.success) {
+      throw new Error(result.error || '排程失敗');
     }
+    console.log(`[process] 已加入隊列: ${result.fileName}`, result);
+
+    // 2. 開始輪詢 Notion 看是否完成
+    pollForCompletion(date, type, key);
   } catch (err) {
     alert(`處理失敗：${err.message}`);
     delete state.processing[key];
     render();
   }
+}
+
+async function pollForCompletion(date, type, processingKey) {
+  const MAX_POLL_MS = 8 * 60 * 1000;   // 8 分鐘上限
+  const POLL_INTERVAL_MS = 15000;       // 每 15 秒
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < MAX_POLL_MS) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+    try {
+      const noResult = await api.listMeetings();
+      const found = (noResult.meetings || []).find(m => {
+        const d = m.date ? m.date.substring(0, 10) : '';
+        return d === date && m.type === type;
+      });
+
+      if (found) {
+        console.log(`[poll] 偵測到完成：${found.topic}`);
+        state.notionMeetings = (noResult.meetings || []).map(function (m) {
+          const d = formatDate(m.date);
+          return Object.assign({}, m, {
+            year: d.y, month: d.m, day: d.d, dow: d.dow,
+            dateKey: m.date ? m.date.substring(0, 10) : '',
+          });
+        });
+        delete state.processing[processingKey];
+        DriveCache.invalidate(state.sy, state.sm + 1);
+        await loadDriveForMonth(state.sy, state.sm);
+        alert(`完成！「${found.topic}」已建立 Notion 草稿，請至 Notion 校稿。`);
+        return;
+      }
+    } catch (e) {
+      console.warn(`[poll] 輪詢失敗（會重試）：${e.message}`);
+    }
+  }
+
+  delete state.processing[processingKey];
+  render();
+  alert(`處理超過 8 分鐘仍未完成，可能失敗了。\n請查看 GAS 執行紀錄：\nhttps://script.google.com/d/1gjOAw4XvHQa8YVv21Kh0T6kYVqTws_c3-ESQQB9uVCJx2RCrQjH_zPno/executions`);
 }
 
 function pad2(n) { return String(n).padStart(2, '0'); }
