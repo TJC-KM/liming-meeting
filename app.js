@@ -295,18 +295,24 @@ function renderRow(r) {
   h += `<div class="date-col"><div class="date-day">${r.day}</div><div class="date-mon">${r.month}月</div></div>`;
   h += '<div class="info">';
 
-  if (st === 'filled' && r.topic) {
-    h += `<div class="info-title">${escapeHtml(r.topic)}</div>`;
+  // 標題：filled 用 Notion topic；pending 用檔名解析出的 topic；其他用聚會類型作 placeholder
+  const displayTopic = (st === 'filled' ? r.topic : null)
+                    || (r.driveFile ? r.driveFile.topic : null);
+
+  if (displayTopic) {
+    h += `<div class="info-title">${escapeHtml(displayTopic)}</div>`;
   } else {
     h += `<div class="info-title info-title-empty">${escapeHtml(r.type)}</div>`;
   }
 
+  // 講員：filled 用 Notion speaker，pending 用檔名解析出的 speaker
+  const displaySpeaker = (st === 'filled' ? r.speaker : null)
+                      || (r.driveFile ? r.driveFile.speaker : null);
+
   h += '<div class="info-meta">';
-  if (st === 'filled') {
-    h += `<span class="type-tag">${escapeHtml(r.type)}</span>`;
-  }
+  h += `<span class="type-tag">${escapeHtml(r.type)}</span>`;
   h += `<span>週${DOW_NAMES[r.dow]}</span>`;
-  if (r.speaker) h += `<span>${escapeHtml(r.speaker)}</span>`;
+  if (displaySpeaker) h += `<span>${escapeHtml(displaySpeaker)}</span>`;
   if (r.driveFile) h += `<span class="file-size">${r.driveFile.sizeMB} MB</span>`;
   h += `<span class="badge ${badgeClass}">${escapeHtml(badgeText)}</span>`;
   h += '</div></div>';
@@ -360,7 +366,19 @@ async function handleProcess(date, type) {
   const key = `${date}_${type}`;
   if (state.processing[key]) return;
 
-  const ok = confirm(`處理 ${date} ${type} 的錄音檔？\n\n會送給 Gemini 整理為主題、重點、經文，預計 1-2 分鐘。處理完成後會自動建立 Notion 草稿。`);
+  // 從 driveFiles 找對應檔案，把講題與講員秀給使用者確認
+  const file = state.driveFiles.find(f => f.date === date && f.type === type);
+  const topic = file ? file.topic : '';
+  const speaker = file ? file.speaker : '';
+
+  const promptLines = [
+    `處理「${topic}」${speaker ? '(' + speaker + ')' : ''}？`,
+    '',
+    `日期：${date} (${type})`,
+    '',
+    '會送給 Gemini 整理為重點與經文，預計 1-2 分鐘。完成後會自動建立 Notion 草稿。',
+  ];
+  const ok = confirm(promptLines.join('\n'));
   if (!ok) return;
 
   state.processing[key] = true;
@@ -369,7 +387,7 @@ async function handleProcess(date, type) {
   try {
     const result = await gasApi.process(date, type);
     if (result.success) {
-      alert(`完成！\n\n主題：${result.topic}\n講員：${result.speaker || '(未指定)'}\n\n已建立 Notion 草稿，請至 Notion 校稿後將狀態改為「已發布」。`);
+      alert(`完成！「${result.topic}」已建立 Notion 草稿，請至 Notion 校稿。`);
       await loadAll();
     } else {
       throw new Error(result.error || '未知錯誤');
