@@ -46,16 +46,14 @@ const gasApi = {
     return !!CONFIG.GAS_URL;
   },
 
-  async _post(payload) {
+  // 用 GET 而非 POST：避開 GAS Web App 跨域 POST 的 CORS / 302 redirect 問題
+  async _get(params) {
     if (!CONFIG.GAS_URL) throw new Error('GAS_URL 未設定');
-    const body = new URLSearchParams({ data: JSON.stringify(payload) });
-    const r = await fetch(CONFIG.GAS_URL, {
-      method: 'POST',
-      body: body.toString(),
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      redirect: 'follow',
-      // 不帶 cookies，避免 Google 帳號狀態干擾 GAS Web App 的匿名授權
+    const url = CONFIG.GAS_URL + '?' + new URLSearchParams(params).toString();
+    const r = await fetch(url, {
+      method: 'GET',
       credentials: 'omit',
+      cache: 'no-store',
     });
     if (!r.ok) throw new Error(`GAS HTTP ${r.status}`);
     const data = await r.json();
@@ -63,19 +61,17 @@ const gasApi = {
     return data;
   },
 
-  // 取得指定年月的錄音檔清單（推薦用法，比掃整個 Drive 快上百倍）
-  // 若不傳 year/month，預設只回近 30 天上傳的
   async listUnprocessed(year, month) {
-    const payload = { action: 'list' };
+    const params = { action: 'list' };
     if (year && month) {
-      payload.year = year;
-      payload.month = month;
+      params.year = year;
+      params.month = month;
     }
-    return this._post(payload);
+    return this._get(params);
   },
 
   async process(date, type) {
-    return this._post({ action: 'process', date: date, type: type });
+    return this._get({ action: 'process', date: date, type: type });
   },
 };
 
