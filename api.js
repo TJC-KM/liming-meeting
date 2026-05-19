@@ -9,8 +9,7 @@
 const CONFIG = {
   USE_MOCK: false,
   API_URL: 'https://church-meeting-api.c3012312.workers.dev',
-  // 部署 GAS Web App 後，把 .../exec 網址填到這裡。留空字串則前端不會顯示「處理」相關功能。
-  GAS_URL: '',
+  GAS_URL: 'https://script.google.com/macros/s/AKfycbwvdpxMqKCtpcDf6dzjvprv46kNS1Gwj0C1fPdQO7dTfTOQquvzPEZL5_aYeAYUUMs/exec',
 };
 
 // === Notion 端（Worker proxy）===
