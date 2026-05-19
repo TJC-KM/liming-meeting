@@ -54,6 +54,8 @@ const gasApi = {
       body: body.toString(),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       redirect: 'follow',
+      // 不帶 cookies，避免 Google 帳號狀態干擾 GAS Web App 的匿名授權
+      credentials: 'omit',
     });
     if (!r.ok) throw new Error(`GAS HTTP ${r.status}`);
     const data = await r.json();
