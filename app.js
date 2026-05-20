@@ -211,9 +211,13 @@ function getRows() {
   if (state.sq) {
     const q = state.sq.toLowerCase();
     rows = rows.filter(function (r) {
-      return (r.topic || '').toLowerCase().indexOf(q) >= 0
-        || (r.speaker || '').indexOf(q) >= 0
-        || (r.type || '').indexOf(q) >= 0;
+      // 已處理 (filled) 用 r.topic/speaker；待處理 (pending) 用 r.driveFile.topic/speaker
+      const topic = (r.topic || (r.driveFile && r.driveFile.topic) || '').toLowerCase();
+      const speaker = r.speaker || (r.driveFile && r.driveFile.speaker) || '';
+      const type = r.type || '';
+      return topic.indexOf(q) >= 0
+        || speaker.indexOf(q) >= 0
+        || type.indexOf(q) >= 0;
     });
   }
   return rows;
