@@ -40,38 +40,31 @@ const api = {
   },
 };
 
-// === GAS 端（Drive 掃描 + 處理觸發）===
+// === Worker 端（Drive 掃描 + 處理觸發；取代原本的 GAS）===
+// 變數名稱保留為 gasApi 是因為現有 app.js 還用這個名字呼叫，純向後相容
 const gasApi = {
   enabled() {
-    return !!CONFIG.GAS_URL;
+    return !!CONFIG.API_URL;
   },
 
-  // 用 GET 而非 POST：避開 GAS Web App 跨域 POST 的 CORS / 302 redirect 問題
-  async _get(params) {
-    if (!CONFIG.GAS_URL) throw new Error('GAS_URL 未設定');
-    const url = CONFIG.GAS_URL + '?' + new URLSearchParams(params).toString();
-    const r = await fetch(url, {
-      method: 'GET',
-      credentials: 'omit',
-      cache: 'no-store',
-    });
-    if (!r.ok) throw new Error(`GAS HTTP ${r.status}`);
+  async listUnprocessed(year, month) {
+    const params = new URLSearchParams({ year: String(year), month: String(month) });
+    const r = await fetch(`${CONFIG.API_URL}/drive/list?${params}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`Worker HTTP ${r.status}`);
     const data = await r.json();
     if (data.error) throw new Error(data.error);
     return data;
   },
 
-  async listUnprocessed(year, month) {
-    const params = { action: 'list' };
-    if (year && month) {
-      params.year = year;
-      params.month = month;
-    }
-    return this._get(params);
-  },
-
   async process(date, type) {
-    return this._get({ action: 'process', date: date, type: type });
+    const params = new URLSearchParams({ date, type });
+    const r = await fetch(`${CONFIG.API_URL}/drive/process?${params}`, {
+      method: 'POST',
+      cache: 'no-store',
+    });
+    const data = await r.json().catch(() => ({ success: true, queued: true }));
+    if (data.error && !data.success) throw new Error(data.error);
+    return data;
   },
 };
 
