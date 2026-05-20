@@ -10,6 +10,17 @@ const SCHEDULE = {
 
 const ALL_TYPES = ['週二晚間', '週三晚間', '週五晚間', '安息日上午', '安息日晚間', '主日聚會'];
 
+// 篩選 chips：依星期（週六顯示為「安息日」）
+const WEEKDAY_FILTERS = [
+  { dow: 1, label: '週一' },
+  { dow: 2, label: '週二' },
+  { dow: 3, label: '週三' },
+  { dow: 4, label: '週四' },
+  { dow: 5, label: '週五' },
+  { dow: 6, label: '安息日' },
+  { dow: 0, label: '週日' },
+];
+
 var state = {
   notionMeetings: [],
   driveFiles: [],           // 目前選擇月份的 Drive 檔案
@@ -191,7 +202,8 @@ function getRows() {
   });
 
   if (state.filter !== 'all') {
-    rows = rows.filter(r => r.type === state.filter);
+    const targetDow = parseInt(state.filter, 10);
+    rows = rows.filter(r => new Date(r.year, r.month - 1, r.day).getDay() === targetDow);
   }
   if (state.hideFuture) {
     rows = rows.filter(r => r._state !== 'future');
@@ -242,8 +254,8 @@ function render() {
   h += '<input class="search" type="text" placeholder="搜尋主題、講員..." value="' + escapeAttr(state.sq) + '" id="si"></div>';
 
   h += '<div class="filters" id="ft"><button class="chip ' + (state.filter === 'all' ? 'active' : '') + '" data-f="all">全部</button>';
-  ALL_TYPES.forEach(function (t) {
-    h += '<button class="chip ' + (state.filter === t ? 'active' : '') + '" data-f="' + t + '">' + t + '</button>';
+  WEEKDAY_FILTERS.forEach(function (w) {
+    h += '<button class="chip ' + (state.filter === String(w.dow) ? 'active' : '') + '" data-f="' + w.dow + '">' + w.label + '</button>';
   });
   h += '<button class="chip ' + (state.hideFuture ? 'active' : '') + '" id="hf-chip">' + (state.hideFuture ? '✓ ' : '') + '隱藏未到</button>';
   h += '</div>';
