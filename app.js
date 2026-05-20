@@ -17,12 +17,20 @@ var state = {
   sq: '',
   sy: null,
   sm: null,                 // null = 全年；0-11 = 月份
+  hideFuture: false,        // 隱藏未到日期
   theme: ThemeManager.get(),
   loading: true,
   loadingDrive: false,
   driveError: null,
   processing: {},
 };
+
+// 週幾標籤：週六顯示為「安息日」，其他為「週X」
+function dowLabel(year, month, day) {
+  const d = new Date(year, month - 1, day).getDay();
+  if (d === 6) return '安息日';
+  return '週' + DOW_NAMES[d];
+}
 
 function init() {
   document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(state.theme);
@@ -185,6 +193,9 @@ function getRows() {
   if (state.filter !== 'all') {
     rows = rows.filter(r => r.type === state.filter);
   }
+  if (state.hideFuture) {
+    rows = rows.filter(r => r._state !== 'future');
+  }
   if (state.sq) {
     const q = state.sq.toLowerCase();
     rows = rows.filter(function (r) {
@@ -197,9 +208,11 @@ function getRows() {
 }
 
 function getYears() {
-  const set = new Set([new Date().getFullYear()]);
-  state.notionMeetings.forEach(m => m.year && set.add(m.year));
-  return Array.from(set).sort((a, b) => b - a);
+  // 固定從 2018 到本年
+  const current = new Date().getFullYear();
+  const years = [];
+  for (let y = current; y >= 2018; y--) years.push(y);
+  return years;
 }
 
 function getMonthCounts() {
@@ -232,6 +245,7 @@ function render() {
   ALL_TYPES.forEach(function (t) {
     h += '<button class="chip ' + (state.filter === t ? 'active' : '') + '" data-f="' + t + '">' + t + '</button>';
   });
+  h += '<button class="chip ' + (state.hideFuture ? 'active' : '') + '" id="hf-chip">' + (state.hideFuture ? '✓ ' : '') + '隱藏未到</button>';
   h += '</div>';
 
   if (years.length > 0) {
@@ -341,7 +355,7 @@ function renderRow(r) {
 
   h += '<div class="info-meta">';
   h += `<span class="type-tag">${escapeHtml(r.type)}</span>`;
-  h += `<span>週${DOW_NAMES[r.dow]}</span>`;
+  h += `<span>${dowLabel(r.year, r.month, r.day)}</span>`;
   if (displaySpeaker) h += `<span>${escapeHtml(displaySpeaker)}</span>`;
   if (r.driveFile) h += `<span class="file-size">${r.driveFile.sizeMB} MB</span>`;
   // badgeText 可能含 HTML（spinner），不能用 escapeHtml
@@ -361,7 +375,12 @@ function bindEvents() {
   if (ft) ft.addEventListener('click', function (e) {
     const b = e.target.closest('.chip');
     if (!b) return;
-    state.filter = b.dataset.f; render();
+    if (b.id === 'hf-chip') {
+      state.hideFuture = !state.hideFuture;
+    } else {
+      state.filter = b.dataset.f;
+    }
+    render();
   });
 
   const yn = document.getElementById('yn');

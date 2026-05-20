@@ -173,6 +173,10 @@ a{color:inherit;text-decoration:none}
 .verse-chinese{font-size:14px;line-height:1.9;margin-bottom:8px;color:var(--tx)}
 .verse-english{font-size:13px;line-height:1.7;color:var(--tx2);font-style:italic}
 
+.audio-embed{background:var(--bg);border:1px solid var(--bd);border-radius:var(--radius-lg);padding:8px;margin-bottom:12px;overflow:hidden}
+.audio-embed iframe{width:100%;height:60px;display:block;border-radius:var(--radius)}
+.senior .audio-embed iframe{height:80px}
+
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .action-btn{flex:1;min-width:140px;padding:12px 14px;border:1px solid var(--bd);border-radius:var(--radius);background:var(--bg);font-size:13px;color:var(--tx);cursor:pointer;font-family:var(--font);display:flex;align-items:center;justify-content:center;gap:6px;transition:all .12s}
 .action-btn:hover{background:var(--bg3);border-color:var(--bd2)}

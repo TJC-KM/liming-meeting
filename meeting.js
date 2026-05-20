@@ -36,21 +36,35 @@
     if (m.speaker) h += '<span>🎤 ' + escapeHtml(m.speaker) + '</span>';
     h += '</div></div>';
 
-    // 操作列
-    if (m.audioUrl || m.attachmentUrl) {
-      h += '<div class="actions">';
-      if (m.audioUrl) {
-        h += '<a class="action-btn" href="' + escapeAttr(m.audioUrl) + '" target="_blank" rel="noopener">';
-        h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>';
-        h += '聆聽錄音</a>';
+    // 嵌入錄音播放器（Drive preview iframe，可以播放）
+    if (m.audioUrl) {
+      const driveFileId = (m.audioUrl.match(/\/d\/([^\/]+)/) || [])[1];
+      if (driveFileId) {
+        h += '<div class="audio-embed">';
+        h += '<iframe src="https://drive.google.com/file/d/' + escapeAttr(driveFileId) + '/preview" allow="autoplay" frameborder="0"></iframe>';
+        h += '</div>';
       }
-      if (m.attachmentUrl) {
-        h += '<a class="action-btn" href="' + escapeAttr(m.attachmentUrl) + '" target="_blank" rel="noopener">';
-        h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>';
-        h += '附件資料夾</a>';
-      }
-      h += '</div>';
     }
+
+    // 操作列
+    h += '<div class="actions">';
+    if (m.audioUrl) {
+      h += '<a class="action-btn" href="' + escapeAttr(m.audioUrl) + '" target="_blank" rel="noopener">';
+      h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+      h += '下載錄音</a>';
+    }
+    if (m.attachmentUrl) {
+      h += '<a class="action-btn" href="' + escapeAttr(m.attachmentUrl) + '" target="_blank" rel="noopener">';
+      h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>';
+      h += '附件資料夾</a>';
+    }
+    if (m.id) {
+      const notionUrl = 'https://www.notion.so/' + m.id.replace(/-/g, '');
+      h += '<a class="action-btn" href="' + escapeAttr(notionUrl) + '" target="_blank" rel="noopener">';
+      h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+      h += '在 Notion 編輯</a>';
+    }
+    h += '</div>';
 
     // 聚會資訊（預告用）
     if (m.info) {
