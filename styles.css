@@ -75,8 +75,12 @@ a{color:inherit;text-decoration:none}
 .row-pending.row-clickable:hover{filter:brightness(.97)}
 .row-future{border-left:3px solid var(--accent);opacity:.85}
 .row-empty{opacity:.5}
-.row-processing{cursor:wait;background:var(--bg2)}
+.row-processing{cursor:wait;background:var(--warn-bg);border-color:var(--warn)}
 .row-processing .arrow{display:none}
+.row-processing .badge{font-weight:600}
+.spinner{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin 0.7s linear infinite;vertical-align:-2px;margin-right:4px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.processing-banner{position:sticky;top:0;z-index:10;background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn-tx);padding:10px 14px;border-radius:var(--radius);margin-bottom:12px;font-size:13px;display:flex;align-items:center;gap:8px}
 .info-title-empty{font-weight:400;color:var(--tx2)}
 .file-size{font-size:11px;color:var(--tx3)}
 .badge-pending{background:var(--warn-bg);color:var(--warn-tx);border:1px solid var(--warn)}

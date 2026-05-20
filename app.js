@@ -296,7 +296,16 @@ function renderRow(r) {
     action = `data-action="open" data-id="${escapeAttr(r.id)}"`;
   } else if (st === 'pending') {
     badgeClass = 'badge-pending';
-    badgeText = isProcessing ? '處理中...' : '待處理';
+    if (isProcessing) {
+      const startedAt = state.processing[procKey];
+      const elapsedMs = Date.now() - (typeof startedAt === 'number' ? startedAt : Date.now());
+      const min = Math.floor(elapsedMs / 60000);
+      const sec = Math.floor((elapsedMs % 60000) / 1000);
+      const elapsedStr = min > 0 ? `${min}:${String(sec).padStart(2, '0')}` : `${sec}s`;
+      badgeText = `<span class="spinner"></span>處理中 ${elapsedStr}`;
+    } else {
+      badgeText = '待處理';
+    }
     clickable = !isProcessing && gasApi.enabled();
     action = `data-action="process" data-date="${r.year}-${pad2(r.month)}-${pad2(r.day)}" data-type="${escapeAttr(r.type)}"`;
   } else if (st === 'future') {
@@ -335,7 +344,8 @@ function renderRow(r) {
   h += `<span>週${DOW_NAMES[r.dow]}</span>`;
   if (displaySpeaker) h += `<span>${escapeHtml(displaySpeaker)}</span>`;
   if (r.driveFile) h += `<span class="file-size">${r.driveFile.sizeMB} MB</span>`;
-  h += `<span class="badge ${badgeClass}">${escapeHtml(badgeText)}</span>`;
+  // badgeText 可能含 HTML（spinner），不能用 escapeHtml
+  h += `<span class="badge ${badgeClass}">${badgeText}</span>`;
   h += '</div></div>';
 
   if (clickable) h += '<span class="arrow">›</span>';
@@ -406,29 +416,47 @@ async function handleProcess(date, type) {
   const ok = confirm(promptLines.join('\n'));
   if (!ok) return;
 
-  state.processing[key] = true;
+  state.processing[key] = Date.now();
+  startProcessingTicker();
   render();
 
   try {
-    // 1. 送出 queue 請求（立刻回應）
     const result = await gasApi.process(date, type);
     if (!result.success) {
       throw new Error(result.error || '排程失敗');
     }
     console.log(`[process] 已加入隊列: ${result.fileName}`, result);
-
-    // 2. 開始輪詢 Notion 看是否完成
     pollForCompletion(date, type, key);
   } catch (err) {
     alert(`處理失敗：${err.message}`);
     delete state.processing[key];
+    stopProcessingTickerIfDone();
     render();
   }
 }
 
+// 每秒重繪一次「處理中」列，更新顯示經過時間
+var _processingTicker = null;
+function startProcessingTicker() {
+  if (_processingTicker) return;
+  _processingTicker = setInterval(function () {
+    if (Object.keys(state.processing).length === 0) {
+      stopProcessingTickerIfDone();
+    } else {
+      render();
+    }
+  }, 5000);
+}
+function stopProcessingTickerIfDone() {
+  if (_processingTicker && Object.keys(state.processing).length === 0) {
+    clearInterval(_processingTicker);
+    _processingTicker = null;
+  }
+}
+
 async function pollForCompletion(date, type, processingKey) {
-  const MAX_POLL_MS = 8 * 60 * 1000;   // 8 分鐘上限
-  const POLL_INTERVAL_MS = 15000;       // 每 15 秒
+  const MAX_POLL_MS = 12 * 60 * 1000;  // 12 分鐘上限（大檔可能要久）
+  const POLL_INTERVAL_MS = 15000;
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < MAX_POLL_MS) {
@@ -451,6 +479,7 @@ async function pollForCompletion(date, type, processingKey) {
           });
         });
         delete state.processing[processingKey];
+        stopProcessingTickerIfDone();
         DriveCache.invalidate(state.sy, state.sm + 1);
         await loadDriveForMonth(state.sy, state.sm);
         alert(`完成！「${found.topic}」已建立 Notion 草稿，請至 Notion 校稿。`);
@@ -462,8 +491,9 @@ async function pollForCompletion(date, type, processingKey) {
   }
 
   delete state.processing[processingKey];
+  stopProcessingTickerIfDone();
   render();
-  alert(`處理超過 8 分鐘仍未完成，可能失敗了。\n請查看 GAS 執行紀錄：\nhttps://script.google.com/d/1gjOAw4XvHQa8YVv21Kh0T6kYVqTws_c3-ESQQB9uVCJx2RCrQjH_zPno/executions`);
+  alert(`處理超過 12 分鐘仍未完成，可能 Cloudflare 處理超時或 Gemini 持續忙線。\n可到 Cloudflare Dashboard 看 Worker logs，或稍後重試。`);
 }
 
 function pad2(n) { return String(n).padStart(2, '0'); }
