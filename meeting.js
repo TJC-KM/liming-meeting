@@ -68,54 +68,25 @@
       h += '</div>';
     }
 
-    var hasContent = false;
+    // 完整重點與參考經文：從 Notion page body 的 markdown blocks 渲染
+    var hasBody = m.blocks && m.blocks.length > 0;
+    if (hasBody) h += renderBlocks(m.blocks);
 
-    // 新格式：page body 的 blocks（heading_2 / heading_3 / paragraph / bulleted_list_item）
-    if (m.blocks && m.blocks.length > 0) {
-      h += renderBlocks(m.blocks);
-      hasContent = true;
-    } else {
-      // 舊格式：fallback 到 property 渲染（向後相容）
-      if (m.fullContent) {
-        h += '<div class="section">';
-        h += '<div class="section-title">📖 完整重點</div>';
-        h += '<div class="section-body">' + escapeHtml(m.fullContent) + '</div>';
-        h += '</div>';
-        hasContent = true;
-      }
-      var verses = parseVerses(m.verses);
-      if (verses.length > 0) {
-        h += '<div class="section">';
-        h += '<div class="section-title">✝️ 參考經文</div>';
-        verses.forEach(function (v) {
-          h += '<div class="verse-card">';
-          h += '<div class="verse-ref">' + escapeHtml(v.ref) + '</div>';
-          if (v.chinese) h += '<div class="verse-chinese">' + escapeHtml(v.chinese) + '</div>';
-          if (v.english) h += '<div class="verse-english">' + escapeHtml(v.english) + '</div>';
-          h += '</div>';
-        });
-        h += '</div>';
-        hasContent = true;
-      }
-    }
-
-    if (!m.info && !m.summary && !hasContent) {
+    if (!m.info && !m.summary && !hasBody) {
       h += '<div class="empty">此聚會尚未有整理內容</div>';
     }
 
     return h;
   }
 
-  // 渲染 Notion blocks 為 HTML，把 heading_2 分割成 section 卡片
+  // 把 Notion blocks 渲染成 section 卡片
+  // heading_2 = section 標題；heading_3 = subhead；bulleted_list_item = list；其他 = paragraph
+  // 「簡易重點」section 在 body 中會被跳過（已從 property 顯示在最上面）
   function renderBlocks(blocks) {
     var h = '';
-    var section = null;        // 當前 section 內容
+    var section = null;
     var sectionTitle = '';
     var inList = false;
-    var simpleHeader = '';
-
-    // 「簡易重點」section 已經從 property 顯示了，body 內若有同名 heading 就跳過
-    var skipSimple = true;
 
     function openSection(title) {
       closeSection();
@@ -141,28 +112,17 @@
     function closeList() {
       if (inList) { section += '</ul>'; inList = false; }
     }
-    function append(html) {
-      closeList();
-      if (section === null) {
-        // 沒進入 section 就直接寫到 h（不太會發生）
-        h += html;
-      } else {
-        section += html;
-      }
-    }
 
     blocks.forEach(function (b) {
       if (b.type === 'heading_2') {
-        // 一級標題：開新 section
-        if (skipSimple && b.text.indexOf('簡易重點') >= 0) {
-          // skip，因為已在 property 顯示
-          openSection(b.text);
-          section = null; sectionTitle = '';  // 標記為「不要實際開」
+        if (b.text.indexOf('簡易重點') >= 0) {
+          // 已從 property 顯示，跳過 body 內的同名 section
+          closeSection();
+          sectionTitle = ''; section = null;
           return;
         }
         openSection(b.text);
       } else if (b.type === 'heading_3') {
-        // 二級標題：在 section 內當小標
         if (section !== null) {
           closeList();
           section += '<div class="md-subhead">' + escapeHtml(b.text) + '</div>';
@@ -171,13 +131,10 @@
         if (section === null) openSection('內容');
         openList();
         section += '<li>' + escapeHtml(b.text) + '</li>';
-      } else {
-        // paragraph 或其他
+      } else if (b.text && b.text.trim()) {
         if (section === null) openSection('內容');
-        if (b.text.trim()) {
-          closeList();
-          section += '<p>' + escapeHtml(b.text) + '</p>';
-        }
+        closeList();
+        section += '<p>' + escapeHtml(b.text) + '</p>';
       }
     });
     closeSection();
