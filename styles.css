@@ -10,16 +10,15 @@
   --radius:8px;--radius-lg:12px;
   --font:'Noto Sans TC',system-ui,-apple-system,sans-serif;
 }
-@media(prefers-color-scheme:dark){
-  :root{
-    --bg:#1a1a1a;--bg2:#252525;--bg3:#303030;
-    --tx:#e5e5e5;--tx2:#a0a0a0;--tx3:#707070;
-    --bd:#333;--bd2:#444;
-    --accent:#60a5fa;--accent-bg:#1e3a5f;--accent-tx:#93c5fd;
-    --warn:#fbbf24;--warn-bg:#422006;--warn-tx:#fde68a;
-    --ok:#34d399;--ok-bg:#064e3b;--ok-tx:#6ee7b7;
-    --draft-bg:#374151;--draft-tx:#9ca3af;
-  }
+/* 深色主題：使用者明確選擇 .dark 時套用（不再依 prefers-color-scheme） */
+html.dark{
+  --bg:#1a1a1a;--bg2:#252525;--bg3:#303030;
+  --tx:#e5e5e5;--tx2:#a0a0a0;--tx3:#707070;
+  --bd:#333;--bd2:#444;
+  --accent:#60a5fa;--accent-bg:#1e3a5f;--accent-tx:#93c5fd;
+  --warn:#fbbf24;--warn-bg:#422006;--warn-tx:#fde68a;
+  --ok:#34d399;--ok-bg:#064e3b;--ok-tx:#6ee7b7;
+  --draft-bg:#374151;--draft-tx:#9ca3af;
 }
 body{font-family:var(--font);background:var(--bg2);color:var(--tx);min-height:100vh}
 a{color:inherit;text-decoration:none}
@@ -31,10 +30,13 @@ a{color:inherit;text-decoration:none}
 .header h1 svg{width:24px;height:24px;stroke:var(--accent)}
 .back-link{font-size:13px;color:var(--tx2);padding:6px 10px;border-radius:var(--radius);border:1px solid var(--bd);background:var(--bg);cursor:pointer}
 .back-link:hover{background:var(--bg3)}
-.theme-switcher{display:flex;gap:4px}
+.theme-switcher{display:flex;gap:4px;flex-wrap:wrap}
 .theme-btn{padding:6px 12px;border-radius:var(--radius);border:1px solid var(--bd);background:var(--bg);font-size:12px;color:var(--tx2);cursor:pointer;font-family:var(--font);transition:all .15s}
 .theme-btn.active{background:var(--accent-bg);color:var(--accent-tx);border-color:var(--accent)}
 .theme-btn:hover:not(.active){background:var(--bg3)}
+.theme-btn-icon{padding:6px 8px;display:inline-flex;align-items:center;justify-content:center}
+.theme-btn-icon svg{width:14px;height:14px;display:block}
+.theme-divider{width:1px;background:var(--bd);margin:0 2px}
 
 /* === SEARCH === */
 .search-wrap{position:relative;margin-bottom:12px}

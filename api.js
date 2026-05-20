@@ -121,6 +121,7 @@ const DriveCache = {
 };
 
 // === 共用工具 ===
+// 字級主題：成人 / 長輩 / 兒童（影響字級、排版）
 const ThemeManager = {
   KEY: 'church-meeting-theme',
   get() {
@@ -135,12 +136,31 @@ const ThemeManager = {
   },
 };
 
-function renderThemeSwitcher(current) {
+// 配色主題：light / dark（影響背景色）
+const ColorThemeManager = {
+  KEY: 'church-meeting-color',
+  get() {
+    return localStorage.getItem(this.KEY) || 'light';
+  },
+  set(c) { localStorage.setItem(this.KEY, c); },
+  apply(c) {
+    document.documentElement.classList.toggle('dark', c === 'dark');
+  },
+};
+
+const SUN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+const MOON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+
+function renderThemeSwitcher(currentSize, currentColor) {
+  currentColor = currentColor || ColorThemeManager.get();
   return `
     <div class="theme-switcher" id="themeSwitcher">
-      <button class="theme-btn ${current === 'adult' ? 'active' : ''}" data-t="adult">成人版</button>
-      <button class="theme-btn ${current === 'senior' ? 'active' : ''}" data-t="senior">長輩版</button>
-      <button class="theme-btn ${current === 'kids' ? 'active' : ''}" data-t="kids">兒童版</button>
+      <button class="theme-btn ${currentSize === 'adult' ? 'active' : ''}" data-t="adult">成人版</button>
+      <button class="theme-btn ${currentSize === 'senior' ? 'active' : ''}" data-t="senior">長輩版</button>
+      <button class="theme-btn ${currentSize === 'kids' ? 'active' : ''}" data-t="kids">兒童版</button>
+      <span class="theme-divider"></span>
+      <button class="theme-btn theme-btn-icon ${currentColor === 'light' ? 'active' : ''}" data-c="light" title="淺色">${SUN_SVG}</button>
+      <button class="theme-btn theme-btn-icon ${currentColor === 'dark' ? 'active' : ''}" data-c="dark" title="深色">${MOON_SVG}</button>
     </div>
   `;
 }
@@ -151,12 +171,23 @@ function bindThemeSwitcher(containerId, onChange) {
   sw.addEventListener('click', function (e) {
     const b = e.target.closest('.theme-btn');
     if (!b) return;
-    document.querySelectorAll('.theme-btn').forEach(t => t.classList.remove('active'));
-    b.classList.add('active');
-    const t = b.dataset.t;
-    ThemeManager.set(t);
-    ThemeManager.apply(t, containerId);
-    if (onChange) onChange(t);
+
+    if (b.dataset.t) {
+      // 字級主題
+      sw.querySelectorAll('[data-t]').forEach(t => t.classList.remove('active'));
+      b.classList.add('active');
+      const t = b.dataset.t;
+      ThemeManager.set(t);
+      ThemeManager.apply(t, containerId);
+      if (onChange) onChange(t);
+    } else if (b.dataset.c) {
+      // 配色主題
+      sw.querySelectorAll('[data-c]').forEach(c => c.classList.remove('active'));
+      b.classList.add('active');
+      const c = b.dataset.c;
+      ColorThemeManager.set(c);
+      ColorThemeManager.apply(c);
+    }
   });
 }
 

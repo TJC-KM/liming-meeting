@@ -45,6 +45,9 @@ function dowLabel(year, month, day) {
 }
 
 function init() {
+  // 套用配色主題（必須在 render 前）
+  ColorThemeManager.apply(ColorThemeManager.get());
+
   document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(state.theme);
   ThemeManager.apply(state.theme, 'app');
   bindThemeSwitcher('app', function (t) { state.theme = t; render(); });

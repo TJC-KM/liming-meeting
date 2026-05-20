@@ -3,6 +3,8 @@
   var theme = ThemeManager.get();
   var id = new URLSearchParams(location.search).get('id');
 
+  ColorThemeManager.apply(ColorThemeManager.get());
+
   document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(theme);
   ThemeManager.apply(theme, 'app');
   bindThemeSwitcher('app', function (t) { theme = t; });
