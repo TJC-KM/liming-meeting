@@ -189,7 +189,7 @@ function getRows() {
     rows = buildRowsForMonth(state.sy, state.sm).map(enrichRow);
     addSpecialEvents(rows, state.sy, state.sm);
   } else {
-    // 全年模式：只顯示 Notion 既有的紀錄（不顯示空 slot，避免 12 個月 × 28 slot 太多）
+    // 全年模式：只顯示 Notion 既有的紀錄（不顯示空 slot）
     rows = state.notionMeetings
       .filter(m => m.year === state.sy)
       .map(m => Object.assign({}, m, { _state: 'filled' }));
@@ -212,7 +212,6 @@ function getRows() {
   if (state.sq) {
     const q = state.sq.toLowerCase();
     rows = rows.filter(function (r) {
-      // 已處理 (filled) 用 r.topic/speaker；待處理 (pending) 用 r.driveFile.topic/speaker
       const topic = (r.topic || (r.driveFile && r.driveFile.topic) || '').toLowerCase();
       const speaker = r.speaker || (r.driveFile && r.driveFile.speaker) || '';
       const type = r.type || '';
@@ -222,6 +221,23 @@ function getRows() {
     });
   }
   return rows;
+}
+
+// 把 rows 依日期分組成「日卡片」
+function groupByDay(rows) {
+  const map = {};
+  rows.forEach(function (r) {
+    const key = `${r.year}-${r.month}-${r.day}`;
+    if (!map[key]) {
+      map[key] = {
+        year: r.year, month: r.month, day: r.day,
+        dow: new Date(r.year, r.month - 1, r.day).getDay(),
+        items: [],
+      };
+    }
+    map[key].items.push(r);
+  });
+  return Object.values(map);
 }
 
 function getYears() {
@@ -302,15 +318,33 @@ function render() {
   if (rows.length === 0) {
     h += '<div class="empty">找不到符合條件的聚會紀錄</div>';
   } else {
+    const days = groupByDay(rows);
     h += '<div class="list" id="ml">';
-    rows.forEach(function (r) {
-      h += renderRow(r);
+    days.forEach(function (d) {
+      h += renderDay(d);
     });
     h += '</div>';
   }
 
   document.getElementById('root').innerHTML = h;
   bindEvents();
+}
+
+function renderDay(d) {
+  const dowStr = dowLabel(d.year, d.month, d.day).replace('週', '');
+  let h = '<div class="day-card">';
+  h += '<div class="day-date">';
+  h += `<div class="date-day">${d.day}</div>`;
+  h += `<div class="date-mon">${d.month}月</div>`;
+  h += `<div class="date-dow">${dowStr}</div>`;
+  h += '</div>';
+  h += '<div class="day-items">';
+  d.items.forEach(function (item) {
+    h += renderRow(item);
+  });
+  h += '</div>';
+  h += '</div>';
+  return h;
 }
 
 function renderRow(r) {
@@ -355,7 +389,6 @@ function renderRow(r) {
   ].filter(Boolean).join(' ');
 
   let h = `<div class="${rowClass}" ${action}>`;
-  h += `<div class="date-col"><div class="date-day">${r.day}</div><div class="date-mon">${r.month}月</div></div>`;
   h += '<div class="info">';
 
   const displayTopic = (st === 'filled' ? r.topic : null)
@@ -372,7 +405,6 @@ function renderRow(r) {
 
   h += '<div class="info-meta">';
   h += `<span class="type-tag">${escapeHtml(r.type)}</span>`;
-  h += `<span>${dowLabel(r.year, r.month, r.day)}</span>`;
   if (displaySpeaker) h += `<span>${escapeHtml(displaySpeaker)}</span>`;
   if (r.driveFile) h += `<span class="file-size">${r.driveFile.sizeMB} MB</span>`;
   // badgeText 可能含 HTML（spinner），不能用 escapeHtml
