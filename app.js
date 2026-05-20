@@ -391,14 +391,17 @@ async function handleProcess(date, type) {
   const speaker = file ? file.speaker : '';
   const sizeMB = file ? file.sizeMB : null;
 
-  const estMin = sizeMB ? Math.max(1, Math.round(sizeMB / 10)) : 2;
+  const estMin = sizeMB ? Math.max(1, Math.round(sizeMB / 15)) : 2;
   const promptLines = [
     `處理「${topic}」${speaker ? '(' + speaker + ')' : ''}？`,
     '',
     `日期：${date} (${type})${sizeMB ? '，檔案 ' + sizeMB + ' MB' : ''}`,
     '',
-    `會在背景送 Gemini 整理為重點與經文，預估 ${estMin}-${estMin * 2} 分鐘。`,
-    '完成後 Notion 會出現新草稿，前端會自動偵測並更新。',
+    `會送 Gemini 整理為重點與經文，預估 ${estMin}-${estMin * 2} 分鐘。`,
+    '完成後 Notion 會出現新草稿，前端自動偵測更新。',
+    '',
+    '⚠ Gemini 每日配額有限（約 20 篇/天），',
+    '   建議一天處理 2-3 篇即可，明天請早～',
   ];
   const ok = confirm(promptLines.join('\n'));
   if (!ok) return;
