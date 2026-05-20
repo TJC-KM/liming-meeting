@@ -84,9 +84,8 @@ async function loadInitial() {
 async function loadDriveForMonth(year, month0) {
   if (!gasApi.enabled()) return;
 
-  const m1 = month0 + 1;  // 1-12
+  const m1 = month0 + 1;
 
-  // 先看快取
   const cached = DriveCache.get(year, m1);
   if (cached) {
     state.driveFiles = cached.filter(f => f.parseable);
@@ -104,7 +103,6 @@ async function loadDriveForMonth(year, month0) {
     const result = await gasApi.listUnprocessed(year, m1);
     const files = result.files || [];
     DriveCache.set(year, m1, files);
-    // 確認使用者沒切到其他月份才更新
     if (state.sy === year && state.sm === month0) {
       state.driveFiles = files.filter(f => f.parseable);
       state.loadingDrive = false;
@@ -119,12 +117,60 @@ async function loadDriveForMonth(year, month0) {
   }
 }
 
+async function loadDriveForYear(year) {
+  if (!gasApi.enabled()) return;
+
+  state.loadingDrive = true;
+  state.driveError = null;
+  state.driveFiles = [];
+  render();
+
+  // 並行載入 12 個月，搭配快取
+  const promises = [];
+  const allFiles = [];
+  for (let m = 1; m <= 12; m++) {
+    const cached = DriveCache.get(year, m);
+    if (cached) {
+      allFiles.push.apply(allFiles, cached);
+    } else {
+      promises.push(
+        gasApi.listUnprocessed(year, m).then(function (result) {
+          const files = result.files || [];
+          DriveCache.set(year, m, files);
+          allFiles.push.apply(allFiles, files);
+        }).catch(function (e) {
+          console.warn(`[loadDriveForYear] ${year}-${m} 失敗:`, e.message);
+        })
+      );
+    }
+  }
+
+  if (promises.length === 0) {
+    // 全部都在快取
+    if (state.sy === year && state.sm === null) {
+      state.driveFiles = allFiles.filter(f => f.parseable);
+      state.loadingDrive = false;
+      render();
+    }
+    return;
+  }
+
+  await Promise.all(promises);
+
+  if (state.sy === year && state.sm === null) {
+    state.driveFiles = allFiles.filter(f => f.parseable);
+    state.loadingDrive = false;
+    render();
+  }
+}
+
 function selectMonth(year, month0) {
   state.sy = year;
   state.sm = month0;
-  state.driveFiles = [];  // 清舊資料
+  state.driveFiles = [];
   render();
   if (month0 !== null) loadDriveForMonth(year, month0);
+  else loadDriveForYear(year);
 }
 
 function selectYear(year) {
@@ -132,7 +178,7 @@ function selectYear(year) {
   state.sm = null;
   state.driveFiles = [];
   render();
-  // 全年模式不抓 Drive
+  loadDriveForYear(year);
 }
 
 // === 行事曆生成 ===
@@ -189,10 +235,12 @@ function getRows() {
     rows = buildRowsForMonth(state.sy, state.sm).map(enrichRow);
     addSpecialEvents(rows, state.sy, state.sm);
   } else {
-    // 全年模式：只顯示 Notion 既有的紀錄（不顯示空 slot）
-    rows = state.notionMeetings
-      .filter(m => m.year === state.sy)
-      .map(m => Object.assign({}, m, { _state: 'filled' }));
+    // 全年：生成全年 12 個月的所有 slot，搭配已載入的 Drive 資料
+    for (let m = 0; m < 12; m++) {
+      const monthRows = buildRowsForMonth(state.sy, m).map(enrichRow);
+      addSpecialEvents(monthRows, state.sy, m);
+      rows = rows.concat(monthRows);
+    }
   }
 
   rows.sort(function (a, b) {
@@ -304,7 +352,7 @@ function render() {
     h += '<span class="s-item">全年 <strong>' + rows.length + '</strong> 筆紀錄</span>';
   }
   h += '<span class="s-item"><span class="dot-pub"></span>已紀錄 ' + filled + '</span>';
-  if (gasApi.enabled() && state.sm !== null) {
+  if (gasApi.enabled()) {
     if (state.loadingDrive) {
       h += '<span class="s-item" style="color:var(--tx3)">⏳ 載入錄音檔...</span>';
     } else if (state.driveError) {
