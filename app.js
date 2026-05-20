@@ -400,8 +400,8 @@ async function handleProcess(date, type) {
     `會送 Gemini 整理為重點與經文，預估 ${estMin}-${estMin * 2} 分鐘。`,
     '完成後 Notion 會出現新草稿，前端自動偵測更新。',
     '',
-    '⚠ Gemini 每日配額有限（約 20 篇/天），',
-    '   建議一天處理 2-3 篇即可，明天請早～',
+    '⚠ Gemini 每日配額有限，建議一天處理 5-6 篇',
+    '   超過上限會顯示「今日配額用完」，明天再試。',
   ];
   const ok = confirm(promptLines.join('\n'));
   if (!ok) return;
