@@ -58,11 +58,28 @@ const gasApi = {
 
   async process(date, type) {
     const params = new URLSearchParams({ date, type });
+    // Worker 處理需要 1-3 分鐘，連線中可能斷。即使 body 空了，
+    // 處理仍在 Cloudflare 後台繼續跑，由 polling 偵測完成。
     const r = await fetch(`${CONFIG.API_URL}/drive/process?${params}`, {
       method: 'POST',
       cache: 'no-store',
+      keepalive: true,
+    }).catch(err => {
+      console.warn('[process fetch]', err.message);
+      return null;
     });
-    const data = await r.json().catch(() => ({ success: true, queued: true }));
+
+    if (!r) return { success: true, queued: true };  // 連線失敗也視為 queued
+
+    let data;
+    try {
+      const text = await r.text();
+      data = text ? JSON.parse(text) : { success: true, queued: true };
+    } catch (e) {
+      data = { success: true, queued: true };
+    }
+
+    // 只有 Worker 明確回 error 才報錯（找不到檔案、Notion 重複等）
     if (data.error && !data.success) throw new Error(data.error);
     return data;
   },
