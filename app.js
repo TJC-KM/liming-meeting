@@ -526,32 +526,30 @@ async function handleProcess(date, type) {
     '',
     `日期：${date} (${type})${sizeMB ? '，檔案 ' + sizeMB + ' MB' : ''}`,
     '',
-    `會送 Gemini 整理為重點與經文，預估 ${estMin}-${estMin * 2} 分鐘。`,
-    '完成後 Notion 會出現新草稿，前端自動偵測更新。',
+    `送 Gemini 整理重點與經文，預估 ${estMin}-${estMin * 2} 分鐘。`,
+    '確認後會跳到聚會詳細頁，可以看處理進度。',
     '',
     '⚠ Gemini 每日配額有限，建議一天處理 5-6 篇',
-    '   超過上限會顯示「今日配額用完」，明天再試。',
   ];
   const ok = confirm(promptLines.join('\n'));
   if (!ok) return;
 
-  state.processing[key] = Date.now();
-  startProcessingTicker();
-  render();
+  // 發 Worker 請求（不 await，keepalive 確保離開頁面仍會送出）
+  gasApi.process(date, type)
+    .then(r => console.log('[process] worker 完成', r))
+    .catch(e => console.warn('[process] worker 失敗', e.message));
 
-  try {
-    const result = await gasApi.process(date, type);
-    if (!result.success) {
-      throw new Error(result.error || '排程失敗');
-    }
-    console.log(`[process] 已加入隊列: ${result.fileName}`, result);
-    pollForCompletion(date, type, key);
-  } catch (err) {
-    alert(`處理失敗：${err.message}`);
-    delete state.processing[key];
-    stopProcessingTickerIfDone();
-    render();
-  }
+  // 立刻跳到 meeting.html 等待模式
+  const qp = new URLSearchParams({
+    date: date,
+    type: type,
+    topic: topic || '',
+    speaker: speaker || '',
+    sizeMB: sizeMB ? String(sizeMB) : '',
+    processing: '1',
+  });
+  if (state.theme !== 'adult') qp.set('theme', state.theme);
+  location.href = 'meeting.html?' + qp.toString();
 }
 
 // 每秒重繪一次「處理中」列，更新顯示經過時間

@@ -1,7 +1,16 @@
 // 詳細頁邏輯
 (function () {
   var theme = ThemeManager.get();
-  var id = new URLSearchParams(location.search).get('id');
+  var params = new URLSearchParams(location.search);
+  var id = params.get('id');
+  var qDate = params.get('date');
+  var qType = params.get('type');
+  var qTopic = params.get('topic') || '';
+  var qSpeaker = params.get('speaker') || '';
+  var qSizeMB = params.get('sizeMB') || '';
+  var processing = params.get('processing') === '1';
+  var processingStartedAt = Date.now();
+  var pollTicker = null;
 
   ColorThemeManager.apply(ColorThemeManager.get());
 
@@ -9,19 +18,94 @@
   ThemeManager.apply(theme, 'app');
   bindThemeSwitcher('app', function (t) { theme = t; });
 
-  if (!id) {
-    document.getElementById('root').innerHTML = '<div class="empty">缺少聚會 ID</div>';
-    return;
+  if (id) {
+    loadById(id);
+  } else if (qDate && qType) {
+    // 等待模式：Worker 還在處理，poll Notion 直到出現
+    showProcessingPlaceholder();
+    startPolling();
+  } else {
+    document.getElementById('root').innerHTML = '<div class="empty">缺少聚會 ID 或 date+type</div>';
   }
 
-  api.getMeeting(id)
-    .then(function (m) {
-      document.title = (m.topic || '聚會紀錄') + ' - 教會聚會紀錄';
-      document.getElementById('root').innerHTML = renderMeeting(m);
-    })
-    .catch(function (err) {
-      document.getElementById('root').innerHTML = '<div class="empty">載入失敗：' + err.message + '</div>';
-    });
+  function loadById(theId) {
+    api.getMeeting(theId)
+      .then(function (m) {
+        document.title = (m.topic || '聚會紀錄') + ' - 教會聚會紀錄';
+        document.getElementById('root').innerHTML = renderMeeting(m);
+      })
+      .catch(function (err) {
+        document.getElementById('root').innerHTML = '<div class="empty">載入失敗：' + err.message + '</div>';
+      });
+  }
+
+  function showProcessingPlaceholder() {
+    document.title = (qTopic || '處理中') + ' - 處理中 - 教會聚會紀錄';
+    var elapsedMs = Date.now() - processingStartedAt;
+    var min = Math.floor(elapsedMs / 60000);
+    var sec = Math.floor((elapsedMs % 60000) / 1000);
+    var elapsedStr = min > 0 ? `${min}:${String(sec).padStart(2, '0')}` : `${sec}s`;
+
+    var h = '';
+    h += '<div class="meeting-header">';
+    h += '<div class="meeting-title">' + escapeHtml(qTopic || '(處理中)') + '</div>';
+    h += '<div class="meeting-meta">';
+    h += '<span class="type-tag">' + escapeHtml(qType) + '</span>';
+    h += '<span class="badge badge-pending"><span class="spinner"></span>處理中 ' + elapsedStr + '</span>';
+    h += '<span>📅 ' + escapeHtml(qDate) + '</span>';
+    if (qSpeaker) h += '<span>🎤 ' + escapeHtml(qSpeaker) + '</span>';
+    h += '</div></div>';
+
+    h += '<div class="section">';
+    h += '<div class="section-title">⏳ 正在處理</div>';
+    h += '<div class="section-body">';
+    h += '<p>Gemini AI 正在聆聽錄音、整理重點與經文，預估 1-3 分鐘。</p>';
+    h += '<p style="color:var(--tx2)">完成後此頁會自動更新，**不需要刷新或離開**。</p>';
+    if (qSizeMB) h += '<p style="color:var(--tx3);font-size:13px">檔案大小：' + qSizeMB + ' MB</p>';
+    h += '</div></div>';
+
+    document.getElementById('root').innerHTML = h;
+  }
+
+  function startPolling() {
+    var POLL_INTERVAL_MS = 10000;  // 每 10 秒
+    var MAX_POLL_MS = 12 * 60 * 1000;  // 12 分鐘上限
+    var UI_TICK_MS = 1000;             // 每秒更新 spinner 時間
+
+    // UI tick：每秒更新經過時間
+    var uiTimer = setInterval(function () {
+      if (Date.now() - processingStartedAt < MAX_POLL_MS) {
+        showProcessingPlaceholder();
+      } else {
+        clearInterval(uiTimer);
+      }
+    }, UI_TICK_MS);
+
+    // Poll Notion
+    var poll = setInterval(async function () {
+      if (Date.now() - processingStartedAt > MAX_POLL_MS) {
+        clearInterval(poll);
+        clearInterval(uiTimer);
+        document.getElementById('root').innerHTML =
+          '<div class="empty">處理超過 12 分鐘仍未完成，可能 Gemini 高負載。請<a href="javascript:history.back()">返回</a>稍後重試。</div>';
+        return;
+      }
+      try {
+        const result = await api.listMeetings();
+        const found = (result.meetings || []).find(m => {
+          const d = m.date ? m.date.substring(0, 10) : '';
+          return d === qDate && m.type === qType;
+        });
+        if (found) {
+          clearInterval(poll);
+          clearInterval(uiTimer);
+          loadById(found.id);
+        }
+      } catch (e) {
+        console.warn('[poll] 失敗（會重試）:', e.message);
+      }
+    }, POLL_INTERVAL_MS);
+  }
 
   function renderMeeting(m) {
     var d = formatDate(m.date);
