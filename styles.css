@@ -78,9 +78,13 @@ a{color:inherit;text-decoration:none}
 .day-items{flex:1;display:flex;flex-direction:column;min-width:0}
 .day-items .row{border:0;border-bottom:1px solid var(--bd);border-radius:0;padding:10px 14px;background:transparent}
 .day-items .row:last-child{border-bottom:0}
-.day-items .row-clickable:hover{background:var(--bg2)}
-.day-items .row-pending{background:var(--warn-bg)}
-.day-items .row-pending.row-clickable:hover{filter:brightness(.97)}
+/* 整列底色三組 — 對應 badge 群組 */
+.day-items .row-filled{background:var(--accent-bg)}        /* 已記錄（草稿/已發布/預告）藍 */
+.day-items .row-pending,
+.day-items .row-pending-study{background:var(--warn-bg)}   /* 待處理（錄音/預查）橘 */
+.day-items .row-future,
+.day-items .row-empty{background:var(--bg3)}               /* 無聚會（預定/無紀錄）灰 */
+.day-items .row-clickable:hover{filter:brightness(.97)}
 .senior .day-date{width:72px;padding:12px 4px}
 .senior .day-date .date-day{font-size:28px}
 .senior .day-date .date-mon{font-size:14px}
