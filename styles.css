@@ -267,84 +267,87 @@ a{color:inherit;text-decoration:none}
    裝置主題：手機版（預設）/ 電腦版
    ================================================================= */
 
-/* 手機版（預設）：sidebar 是「透明」的容器，children 直接 flow */
+/* .sidebar 在 DOM 結構上包住 filters + 年月 nav，但 display:contents
+   讓它在版面上「透明」，子元素 flow 為 #root 的直接 children。
+   不管手機還是電腦，都用這個行為（電腦版的 toolbar 也是水平 chip 排）。*/
 .sidebar{display:contents}
 
-/* === 電腦版 === */
+/* === 電腦版：寬容器 + horizontal toolbar（chip 水平排），自然 flow === */
 .desktop.container{max-width:1200px;padding:24px}
 .desktop .header{margin-bottom:24px}
 .desktop .header h1{font-size:26px}
 
-/* index 頁：sidebar + 3 欄 grid */
-.desktop #root{
+/* meeting 詳細頁的 desktop 寬度由 Phase 3 接手，此處先保留現狀 */
+.desktop.container:has(.meeting-header){max-width:1100px}
+
+/* === 月曆網格（電腦版 + 月份視圖） === */
+.calendar{display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:var(--radius-lg);overflow:hidden;background:var(--bg)}
+.cal-head{display:grid;grid-template-columns:repeat(7,1fr);background:var(--bg2);border-bottom:1px solid var(--bd)}
+.cal-head-cell{padding:8px 6px;text-align:center;font-size:12px;font-weight:600;color:var(--tx2);letter-spacing:1px}
+.cal-head-cell.cal-head-sat{color:var(--accent)}
+.cal-body{display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:minmax(110px, auto)}
+.cal-cell{border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);padding:6px 6px 8px;display:flex;flex-direction:column;gap:4px;background:var(--bg);min-width:0}
+.cal-cell:nth-child(7n){border-right:0}
+.cal-cell-blank{background:var(--bg2);opacity:.4}
+.cal-cell-future .cal-day{color:var(--tx3)}
+.cal-cell-future{background:var(--bg2)}
+.cal-cell-sat{background:linear-gradient(to bottom, var(--accent-bg) 0%, var(--bg) 30%)}
+.cal-cell-today{box-shadow:inset 0 0 0 2px var(--accent)}
+.cal-cell-today .cal-day{color:var(--accent);font-weight:700}
+.cal-day{font-size:13px;font-weight:500;color:var(--tx2);line-height:1;padding:2px 4px}
+.cal-events{display:flex;flex-direction:column;gap:3px;min-width:0}
+.cal-event{font-size:11px;padding:3px 6px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:1px solid transparent;line-height:1.4}
+.cal-event-clickable{cursor:pointer}
+.cal-event-clickable:hover{filter:brightness(.95)}
+.cal-event-filled{background:var(--accent-bg);color:var(--accent-tx);border-color:var(--accent)}
+.cal-event-pending,.cal-event-pending-study{background:var(--warn-bg);color:var(--warn-tx);border-color:var(--warn)}
+.cal-event-processing{cursor:wait;opacity:.7}
+
+/* 大字版的月曆：cell 變高、字變大 */
+.desktop.senior .cal-head-cell{font-size:14px;padding:10px 6px}
+.desktop.senior .cal-body{grid-auto-rows:minmax(130px, auto)}
+.desktop.senior .cal-day{font-size:15px}
+.desktop.senior .cal-event{font-size:13px;padding:4px 8px}
+
+/* === Meeting 詳細頁：電腦版兩欄 === */
+/* 手機版（預設）：aside 與 main 都是 block，順序：header → aside → main */
+.meeting-aside,.meeting-main{display:block}
+
+/* 電腦版：grid 2 欄，header 跨頂、左欄重點內容、右欄縮小的播放器+按鈕 */
+.desktop #root:has(.meeting-header){
   display:grid;
-  grid-template-columns:260px 1fr;
+  grid-template-columns:1fr 300px;
   grid-template-areas:
-    "search   search"
-    "stats    stats"
-    "sidebar  list";
+    "header header"
+    "main   aside";
   column-gap:24px;
-  row-gap:14px;
+  row-gap:18px;
+  align-items:start;
 }
-.desktop #root > .search-wrap{grid-area:search;margin-bottom:0}
-.desktop #root > .stats{grid-area:stats;margin-bottom:0}
-.desktop #root > .sidebar{
-  grid-area:sidebar;
-  display:flex;
-  flex-direction:column;
-  gap:18px;
+.desktop #root:has(.meeting-header) > .meeting-header{grid-area:header}
+.desktop #root:has(.meeting-header) > .meeting-main{grid-area:main;min-width:0}
+.desktop #root:has(.meeting-header) > .meeting-aside{
+  grid-area:aside;
   position:sticky;
   top:16px;
-  align-self:start;
   max-height:calc(100vh - 32px);
   overflow-y:auto;
-}
-.desktop #root > .list{
-  grid-area:list;
-  display:grid;
-  grid-template-columns:repeat(3, 1fr);
-  gap:12px;
-  align-content:start;
-}
-.desktop #root > .empty{grid-column:1/-1}
-
-/* desktop sidebar：filter / 年月 nav 縱向堆疊 */
-.desktop .sidebar .filters,
-.desktop .sidebar .nav-row{
   display:flex;
   flex-direction:column;
-  gap:5px;
-  margin:0;
-  padding:12px;
-  background:var(--bg);
-  border:1px solid var(--bd);
-  border-radius:var(--radius);
-}
-.desktop .sidebar .nav-label{
-  font-size:11px;
-  color:var(--tx3);
-  text-transform:uppercase;
-  letter-spacing:.5px;
-  margin:0 0 6px;
-  padding-bottom:6px;
-  border-bottom:1px solid var(--bd);
-}
-.desktop .sidebar .chip,
-.desktop .sidebar .nav-btn{
-  width:100%;
-  justify-content:flex-start;
-  text-align:left;
-  border-radius:var(--radius);
-  padding:7px 10px;
-  font-size:13px;
+  gap:14px;
 }
 
-/* meeting 詳細頁：保持單欄置中、稍微寬一點（800px）*/
-.desktop.container:has(.meeting-header){max-width:820px}
+/* aside 內元素縮小：播放器矮一點、按鈕滿欄垂直 */
+.desktop .meeting-aside .audio-embed{margin-bottom:0}
+.desktop .meeting-aside .audio-embed iframe{height:50px}
+.desktop .meeting-aside .actions{margin-bottom:0;flex-direction:column;gap:6px}
+.desktop .meeting-aside .action-btn{width:100%;min-width:0;padding:9px 12px;font-size:12px}
+.desktop .meeting-aside .processing-hint{margin-bottom:0;padding:10px 12px}
 
-/* 電腦版 + 大字版：grid 縮成 2 欄（卡片變大裝不下 3 欄）*/
-.desktop.senior #root{grid-template-columns:280px 1fr}
-.desktop.senior #root > .list{grid-template-columns:repeat(2, 1fr)}
+/* 大字版 + 電腦版：aside 稍寬，播放器與字級放大 */
+.desktop.senior #root:has(.meeting-header){grid-template-columns:1fr 340px}
+.desktop.senior .meeting-aside .audio-embed iframe{height:65px}
+.desktop.senior .meeting-aside .action-btn{font-size:14px;padding:11px 14px}
 
 @media(max-width:480px){
   .container{padding:12px}

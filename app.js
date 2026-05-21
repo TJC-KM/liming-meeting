@@ -27,7 +27,7 @@ var state = {
   sq: '',
   sy: null,
   sm: null,
-  hideFuture: true,  // 預設勾選：客戶通常看的是已經發生的聚會
+  showFuture: false,  // 預設不顯示未來日子；勾選「未來」chip 才顯示
   theme: ThemeManager.get(),
   device: DeviceManager.get(),
   loading: true,
@@ -288,7 +288,7 @@ function getDays() {
     const targetDow = parseInt(state.filter, 10);
     days = days.filter(d => d.dow === targetDow);
   }
-  if (state.hideFuture) {
+  if (!state.showFuture) {
     days = days.filter(d => new Date(d.year, d.month - 1, d.day) <= now);
   }
   if (state.sq) {
@@ -376,7 +376,7 @@ function _doRender() {
   WEEKDAY_FILTERS.forEach(function (w) {
     h += '<button class="chip ' + (state.filter === String(w.dow) ? 'active' : '') + '" data-f="' + w.dow + '">' + w.label + '</button>';
   });
-  h += '<button class="chip chip-toggle ' + (state.hideFuture ? 'active' : '') + '" id="hf-chip">' + (state.hideFuture ? '✓ ' : '') + '隱藏未到</button>';
+  h += '<button class="chip chip-toggle ' + (state.showFuture ? 'active' : '') + '" id="hf-chip">' + (state.showFuture ? '✓ ' : '') + '未來</button>';
   h += '</div>';
 
   if (years.length > 0) {
@@ -414,7 +414,11 @@ function _doRender() {
   }
   h += '</div>';
 
-  if (days.length === 0) {
+  // 電腦版 + 單月：用月曆網格；其他情況（手機、全年）用 list
+  const useCalendar = state.device === 'desktop' && state.sm !== null;
+  if (useCalendar) {
+    h += renderCalendarView();
+  } else if (days.length === 0) {
     h += '<div class="empty">找不到符合條件的日子</div>';
   } else {
     h += '<div class="list" id="ml">';
@@ -426,6 +430,121 @@ function _doRender() {
 
   document.getElementById('root').innerHTML = h;
   bindEvents();
+}
+
+// === 月曆網格（電腦版單月）===
+
+// 月曆模式專屬：全部日子都顯示，週幾篩選不套用（網格本來就照週幾排）
+// showFuture 控制「未來日子的 events 是否顯示」，未來日子的 cell 一律存在但 faded
+function renderCalendarView() {
+  const days = buildDaysForMonth(state.sy, state.sm);
+  attachEntries(days);
+  days.sort((a, b) => a.day - b.day);
+
+  // 搜尋：過濾每個 day 的 items
+  if (state.sq) {
+    const q = state.sq.toLowerCase();
+    days.forEach(d => {
+      d.items = d.items.filter(item => {
+        const topic = (item.topic || '').toLowerCase();
+        const speaker = (item.speaker || '').toLowerCase();
+        return topic.indexOf(q) >= 0 || speaker.indexOf(q) >= 0;
+      });
+    });
+  }
+
+  // showFuture 關閉時：未來日子的 events 清空（cell 仍存在但無內容）
+  if (!state.showFuture) {
+    const now = new Date();
+    days.forEach(d => {
+      if (new Date(d.year, d.month - 1, d.day) > now) d.items = [];
+    });
+  }
+
+  return renderCalendarMonth(days, state.sy, state.sm);
+}
+
+function renderCalendarMonth(days, year, month0) {
+  // 計算這個月 1 號是星期幾，補齊 leading cells
+  const firstDow = new Date(year, month0, 1).getDay();  // 0=日 6=六
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  days.forEach(d => cells.push(d));
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  let h = '<div class="calendar">';
+
+  // 週日 ~ 週六 表頭
+  h += '<div class="cal-head">';
+  ['日', '一', '二', '三', '四', '五', '六'].forEach((label, i) => {
+    const cls = 'cal-head-cell' + (i === 6 ? ' cal-head-sat' : '');
+    h += '<div class="' + cls + '">' + label + '</div>';
+  });
+  h += '</div>';
+
+  // 日子 cells
+  h += '<div class="cal-body">';
+  cells.forEach(cell => {
+    if (!cell) {
+      h += '<div class="cal-cell cal-cell-blank"></div>';
+      return;
+    }
+    h += renderCalendarCell(cell);
+  });
+  h += '</div>';
+
+  h += '</div>';
+  return h;
+}
+
+function renderCalendarCell(d) {
+  const today = new Date();
+  const isToday = today.getFullYear() === d.year
+               && today.getMonth() === d.month - 1
+               && today.getDate() === d.day;
+  const isSat = d.dow === 6;
+  const cellDate = new Date(d.year, d.month - 1, d.day);
+  const isFuture = cellDate > today;
+
+  let cls = 'cal-cell';
+  if (isToday) cls += ' cal-cell-today';
+  if (isSat) cls += ' cal-cell-sat';
+  if (isFuture) cls += ' cal-cell-future';
+  if (d.items.length === 0) cls += ' cal-cell-empty';
+
+  let h = '<div class="' + cls + '">';
+  h += '<div class="cal-day">' + d.day + '</div>';
+  if (d.items.length > 0) {
+    h += '<div class="cal-events">';
+    d.items.forEach(item => h += renderCalendarEvent(item, d));
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function renderCalendarEvent(item, d) {
+  const st = item._state;
+  const procKey = `${d.year}-${pad2(d.month)}-${pad2(d.day)}_${item.type}`;
+  const isProcessing = !!state.processing[procKey];
+
+  let action = '';
+  let cls = 'cal-event cal-event-' + st;
+  if (isProcessing) cls += ' cal-event-processing';
+
+  if (st === 'filled' && item.id) {
+    action = `data-action="open" data-id="${escapeAttr(item.id)}"`;
+    cls += ' cal-event-clickable';
+  } else if (st === 'pending' && !isProcessing) {
+    action = `data-action="process" data-date="${d.year}-${pad2(d.month)}-${pad2(d.day)}" data-type="${escapeAttr(item.type)}"`;
+    cls += ' cal-event-clickable';
+  } else if (st === 'pending-study' && !isProcessing && item.studyDoc) {
+    action = `data-action="process-study" data-fileid="${escapeAttr(item.studyDoc.id)}"`;
+    cls += ' cal-event-clickable';
+  }
+
+  const topic = item.topic || (item.driveFile && item.driveFile.topic) || (item.studyDoc && item.studyDoc.topic) || '(未命名)';
+  return `<div class="${cls}" ${action} title="${escapeAttr(topic)}">${escapeHtml(topic)}</div>`;
 }
 
 function renderDay(d) {
@@ -546,7 +665,7 @@ function bindEvents() {
     const b = e.target.closest('.chip');
     if (!b) return;
     if (b.id === 'hf-chip') {
-      state.hideFuture = !state.hideFuture;
+      state.showFuture = !state.showFuture;
     } else {
       state.filter = b.dataset.f;
     }

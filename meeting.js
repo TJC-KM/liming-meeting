@@ -221,7 +221,7 @@
     var m = buildProcessingMeeting();
 
     var h = '';
-    // Header（低調的「處理中」徽章，不再跳秒）
+    // Header
     h += '<div class="meeting-header">';
     h += '<div class="meeting-title">' + escapeHtml(qTopic || '(處理中)') + '</div>';
     h += '<div class="meeting-meta">';
@@ -231,14 +231,15 @@
     if (qSpeaker) h += '<span>🎤 ' + escapeHtml(qSpeaker) + '</span>';
     h += '</div></div>';
 
-    // 嵌入播放器（只有錄音模式才有）
+    // === 右側 aside：播放器 + 按鈕 + 處理中提示 ===
+    h += '<aside class="meeting-aside">';
+
     if (qAudioFileId) {
       h += '<div class="audio-embed">';
       h += '<iframe src="https://drive.google.com/file/d/' + escapeAttr(qAudioFileId) + '/preview" allow="autoplay" frameborder="0"></iframe>';
       h += '</div>';
     }
 
-    // 操作列
     h += '<div class="actions">';
     if (m.audioUrl) {
       h += '<a class="action-btn" href="' + escapeAttr(m.audioUrl) + '" target="_blank" rel="noopener">';
@@ -260,7 +261,6 @@
     }
     h += '</div>';
 
-    // 提示橫幅：低調說明「整理還沒好，但這些先用」
     h += '<div class="processing-hint">';
     h += '<span class="ph-icon">📝</span>';
     h += '<div class="ph-text">';
@@ -268,7 +268,11 @@
     h += '<div class="ph-sub">您可以先' + (qAudioFileId ? '聽錄音、' : '') + '留下心得感想，整理完成後再回來查看</div>';
     h += '</div></div>';
 
-    // 三段 skeleton loader（佔位視覺效果，暗示「這邊還在補」）
+    h += '</aside>';
+
+    // === 左側 main：三段 skeleton（重點內容會出現的位置）===
+    h += '<main class="meeting-main">';
+
     h += '<div class="section section-skeleton">';
     h += '<div class="section-title">📝 簡易重點</div>';
     h += '<div class="section-body">';
@@ -292,6 +296,8 @@
     h += '<div class="skeleton-line" style="width:60%"></div>';
     h += '<div class="skeleton-line" style="width:90%"></div>';
     h += '</div></div>';
+
+    h += '</main>';
 
     document.getElementById('root').innerHTML = h;
 
@@ -342,7 +348,7 @@
     var bc = m.status === '已發布' ? 'badge-pub' : m.status === '預告' ? 'badge-up' : 'badge-draft';
 
     var h = '';
-    // Header
+    // Header（電腦版會放在 grid 頂端 full-width，手機版正常 flow）
     h += '<div class="meeting-header">';
     h += '<div class="meeting-title">' + escapeHtml(m.topic || '(未命名)') + '</div>';
     h += '<div class="meeting-meta">';
@@ -352,7 +358,9 @@
     if (m.speaker) h += '<span>🎤 ' + escapeHtml(m.speaker) + '</span>';
     h += '</div></div>';
 
-    // 嵌入錄音播放器（Drive preview iframe，可以播放）
+    // === 右側 aside：播放器 + 按鈕 === （手機版正常 flow 在 header 之下）
+    h += '<aside class="meeting-aside">';
+
     if (m.audioUrl) {
       const driveFileId = (m.audioUrl.match(/\/d\/([^\/]+)/) || [])[1];
       if (driveFileId) {
@@ -362,7 +370,6 @@
       }
     }
 
-    // 操作列
     h += '<div class="actions">';
     if (m.audioUrl) {
       h += '<a class="action-btn" href="' + escapeAttr(m.audioUrl) + '" target="_blank" rel="noopener">';
@@ -374,7 +381,6 @@
       h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>';
       h += '附件資料夾</a>';
     }
-    // 下載預查文件
     if (m.studyUrl) {
       h += '<a class="action-btn" href="' + escapeAttr(m.studyUrl) + '" target="_blank" rel="noopener">';
       h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
@@ -396,7 +402,11 @@
     }
     h += '</div>';
 
-    // 聚會資訊（預告用）
+    h += '</aside>';
+
+    // === 左側 main：重點內容（電腦版的視覺主角）===
+    h += '<main class="meeting-main">';
+
     if (m.info) {
       h += '<div class="section">';
       h += '<div class="section-title">📢 聚會資訊</div>';
@@ -404,7 +414,6 @@
       h += '</div>';
     }
 
-    // 簡易重點（property，永遠顯示在最上面方便快速瀏覽）
     if (m.summary) {
       h += '<div class="section">';
       h += '<div class="section-title">📝 簡易重點</div>';
@@ -412,13 +421,14 @@
       h += '</div>';
     }
 
-    // 完整重點與參考經文：從 Notion page body 的 markdown blocks 渲染
     var hasBody = m.blocks && m.blocks.length > 0;
     if (hasBody) h += renderBlocks(m.blocks);
 
     if (!m.info && !m.summary && !hasBody) {
       h += '<div class="empty">此聚會尚未有整理內容</div>';
     }
+
+    h += '</main>';
 
     return h;
   }
