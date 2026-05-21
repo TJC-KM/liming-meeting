@@ -12,8 +12,6 @@
   var qAudioFileId = params.get('audioFileId') || '';
   var processing = params.get('processing') === '1';
   var processingStartedAt = Date.now();
-  var pollTicker = null;
-  var processingSkeletonRendered = false;
 
   ColorThemeManager.apply(ColorThemeManager.get());
 
@@ -211,26 +209,19 @@
     };
   }
 
-  function formatElapsed(ms) {
-    var min = Math.floor(ms / 60000);
-    var sec = Math.floor((ms % 60000) / 1000);
-    return min > 0 ? min + ':' + String(sec).padStart(2, '0') : sec + 's';
-  }
-
   // 處理中：一次性 render 完整骨架（header + player + actions + AI skeleton）
-  // 之後計時器只更新 #processingBadge 內文，不重 render，避免重複 bind
+  // 不再有計時器，避免引導客戶注意「為什麼這麼久」
   function renderProcessingSkeleton() {
-    document.title = (qTopic || '處理中') + ' - 處理中 - 教會聚會紀錄';
+    document.title = (qTopic || '處理中') + ' - 教會聚會紀錄';
     var m = buildProcessingMeeting();
-    var elapsedStr = formatElapsed(Date.now() - processingStartedAt);
 
     var h = '';
-    // Header（低調的「處理中」徽章，不再用搶眼的 spinner）
+    // Header（低調的「處理中」徽章，不再跳秒）
     h += '<div class="meeting-header">';
     h += '<div class="meeting-title">' + escapeHtml(qTopic || '(處理中)') + '</div>';
     h += '<div class="meeting-meta">';
     h += '<span class="type-tag">' + escapeHtml(qType) + '</span>';
-    h += '<span class="badge badge-processing" id="processingBadge">處理中 · ' + elapsedStr + '</span>';
+    h += '<span class="badge badge-processing">處理中</span>';
     h += '<span>📅 ' + escapeHtml(qDate) + '</span>';
     if (qSpeaker) h += '<span>🎤 ' + escapeHtml(qSpeaker) + '</span>';
     h += '</div></div>';
@@ -264,12 +255,12 @@
     }
     h += '</div>';
 
-    // 提示橫幅：告訴使用者現在能做什麼
+    // 提示橫幅：低調說明「整理還沒好，但這些先用」
     h += '<div class="processing-hint">';
-    h += '<span class="ph-icon">✨</span>';
+    h += '<span class="ph-icon">📝</span>';
     h += '<div class="ph-text">';
-    h += '<div class="ph-title">AI 正在整理重點與經文，預估 1–3 分鐘</div>';
-    h += '<div class="ph-sub">這段時間您可以先' + (qAudioFileId ? '聽錄音、' : '') + '下載原始檔案，或留下您的心得感想 👇</div>';
+    h += '<div class="ph-title">此聚會的重點整理正在準備中</div>';
+    h += '<div class="ph-sub">您可以先' + (qAudioFileId ? '聽錄音、' : '') + '留下心得感想，整理完成後再回來查看</div>';
     h += '</div></div>';
 
     // 三段 skeleton loader（佔位視覺效果，暗示「這邊還在補」）
@@ -306,39 +297,18 @@
     if (cpClose) cpClose.addEventListener('click', closeComments);
     const cpSubmit = document.getElementById('cpSubmit');
     if (cpSubmit) cpSubmit.addEventListener('click', function () { submitComment(m); });
-
-    processingSkeletonRendered = true;
-  }
-
-  // 計時器：每秒只動 badge 文字，不碰其他元素
-  function updateProcessingTimer() {
-    var badge = document.getElementById('processingBadge');
-    if (badge) {
-      badge.textContent = '處理中 · ' + formatElapsed(Date.now() - processingStartedAt);
-    }
   }
 
   function startPolling() {
     var POLL_INTERVAL_MS = 10000;  // 每 10 秒
     var MAX_POLL_MS = 12 * 60 * 1000;  // 12 分鐘上限
-    var UI_TICK_MS = 1000;             // 每秒更新計時器
 
-    // UI tick：只更新 badge 數字，不重 render（避免重複 bind 事件）
-    var uiTimer = setInterval(function () {
-      if (Date.now() - processingStartedAt < MAX_POLL_MS) {
-        updateProcessingTimer();
-      } else {
-        clearInterval(uiTimer);
-      }
-    }, UI_TICK_MS);
-
-    // Poll Notion
     var poll = setInterval(async function () {
       if (Date.now() - processingStartedAt > MAX_POLL_MS) {
         clearInterval(poll);
-        clearInterval(uiTimer);
-        document.getElementById('root').innerHTML =
-          '<div class="empty">處理超過 12 分鐘仍未完成，可能 Gemini 高負載。請<a href="javascript:history.back()">返回</a>稍後重試。</div>';
+        // 超時：靜默放棄 polling，使用者畫面保持原樣（播放器、心得仍可用）
+        // 不顯示錯誤訊息，因為 worker 端可能還在處理；下次重新整理就會看到
+        console.warn('[poll] 超過 12 分鐘未見 Notion 紀錄，停止輪詢');
         return;
       }
       try {
@@ -354,7 +324,6 @@
         });
         if (found) {
           clearInterval(poll);
-          clearInterval(uiTimer);
           loadById(found.id);
         }
       } catch (e) {

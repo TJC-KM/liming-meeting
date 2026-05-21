@@ -562,20 +562,6 @@ async function handleProcess(date, type) {
   const speaker = file ? file.speaker : '';
   const sizeMB = file ? file.sizeMB : null;
 
-  const estMin = sizeMB ? Math.max(1, Math.round(sizeMB / 15)) : 2;
-  const promptLines = [
-    `處理「${topic}」${speaker ? '(' + speaker + ')' : ''}？`,
-    '',
-    `日期：${date} (${type})${sizeMB ? '，檔案 ' + sizeMB + ' MB' : ''}`,
-    '',
-    `送 Gemini 整理重點與經文，預估 ${estMin}-${estMin * 2} 分鐘。`,
-    '確認後會跳到聚會詳細頁，可以看處理進度。',
-    '',
-    '⚠ Gemini 每日配額有限，建議一天處理 5-6 篇',
-  ];
-  const ok = confirm(promptLines.join('\n'));
-  if (!ok) return;
-
   // 發 Worker 請求（不 await，keepalive 確保離開頁面仍會送出）
   gasApi.process(date, type)
     .then(r => console.log('[process] worker 完成', r))
@@ -601,17 +587,6 @@ async function handleProcessStudy(fileId) {
   if (!doc) return;
   const key = `study_${fileId}`;
   if (state.processing[key]) return;
-
-  const promptLines = [
-    `處理預查文件「${doc.topic}」${doc.speaker ? '(' + doc.speaker + ')' : ''}？`,
-    '',
-    `估計日期：${doc.estimatedDate}（實際日期將從內文偵測）`,
-    `檔案大小：${doc.sizeMB} MB`,
-    '',
-    '會將文件內容寫入 Notion（不經過 Gemini），預計 10-30 秒。',
-    '確認後跳到聚會頁等待結果。',
-  ];
-  if (!confirm(promptLines.join('\n'))) return;
 
   state.processing[key] = Date.now();
   startProcessingTicker();
