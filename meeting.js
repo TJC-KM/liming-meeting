@@ -41,13 +41,37 @@
   }
 
   // === 分享 + 心得 ===
+
+  // 從 m.audioUrl 抽出 Drive 檔案 ID（留言用，比 Notion ID 穩定）
+  function getRecordingId(m) {
+    if (!m.audioUrl) return null;
+    const match = m.audioUrl.match(/\/d\/([^\/]+)/);
+    return match ? match[1] : null;
+  }
+
+  // 留言的「類別」欄位：「2026-05-15 葡萄樹與枝子」
+  function formatCommentCategory(m) {
+    const date = m.date ? m.date.substring(0, 10) : '';
+    const topic = m.topic || '';
+    return date && topic ? date + ' ' + topic : (date || topic);
+  }
+
+  // 這篇 meeting 頁的乾淨分享 URL
+  function getMeetingShareUrl(m) {
+    return location.origin + location.pathname + (m.id ? '?id=' + encodeURIComponent(m.id) : '');
+  }
+
   function bindActionButtons(m) {
     const shareBtn = document.getElementById('shareBtn');
     if (shareBtn) shareBtn.addEventListener('click', shareLink);
 
+    const recId = getRecordingId(m);
     const commentsBtn = document.getElementById('commentsBtn');
-    if (commentsBtn && m.id) {
+    if (commentsBtn && recId) {
       commentsBtn.addEventListener('click', function () { openComments(m); });
+    } else if (commentsBtn) {
+      // 沒有錄音 ID（不太可能但保險）→ 隱藏按鈕
+      commentsBtn.style.display = 'none';
     }
 
     const cpClose = document.getElementById('cpClose');
@@ -98,20 +122,20 @@
   }
 
   function openComments(m) {
-    document.getElementById('cpFolderName').textContent = m.topic || '';
+    document.getElementById('cpFolderName').textContent = formatCommentCategory(m);
     document.getElementById('commentPanel').classList.add('on');
-    loadComments(m.id);
+    loadComments(getRecordingId(m));
   }
 
   function closeComments() {
     document.getElementById('commentPanel').classList.remove('on');
   }
 
-  async function loadComments(meetingId) {
+  async function loadComments(recordingId) {
     const list = document.getElementById('cpList');
     list.innerHTML = '<div class="cp-loading">載入中…</div>';
     try {
-      const url = `${CONFIG.COMMENTS_GAS_URL}?mode=getComments&folderId=${encodeURIComponent(meetingId)}`;
+      const url = `${CONFIG.COMMENTS_GAS_URL}?mode=getComments&folderId=${encodeURIComponent(recordingId)}`;
       const r = await fetch(url);
       const data = await r.json();
       const comments = data.comments || [];
@@ -138,22 +162,27 @@
     const text = document.getElementById('cpText').value.trim();
     if (!text) { alert('請輸入心得內容'); return; }
 
+    const recId = getRecordingId(m);
+    const category = formatCommentCategory(m);
+    const meetingUrl = getMeetingShareUrl(m);
+
     const btn = document.getElementById('cpSubmit');
     btn.disabled = true;
     btn.textContent = '送出中…';
 
     try {
       const url = `${CONFIG.COMMENTS_GAS_URL}?mode=addComment`
-        + `&folderId=${encodeURIComponent(m.id)}`
-        + `&folderName=${encodeURIComponent(m.topic || '')}`
+        + `&folderId=${encodeURIComponent(recId)}`
+        + `&folderName=${encodeURIComponent(category)}`
         + `&name=${encodeURIComponent(name)}`
-        + `&text=${encodeURIComponent(text)}`;
+        + `&text=${encodeURIComponent(text)}`
+        + `&meetingUrl=${encodeURIComponent(meetingUrl)}`;
       const r = await fetch(url);
       const data = await r.json();
       if (data.status === 'success') {
         document.getElementById('cpName').value = '';
         document.getElementById('cpText').value = '';
-        loadComments(m.id);
+        loadComments(recId);
       } else {
         alert('送出失敗：' + (data.message || '未知錯誤'));
       }
