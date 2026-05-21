@@ -24,12 +24,13 @@ const WEEKDAY_FILTERS = [
 
 var state = {
   notionMeetings: [],
-  driveFiles: [],           // 目前選擇月份的 Drive 檔案
+  driveFiles: [],
+  studyDocs: [],            // 所有預查文件（一次性載入，含估計日期）
   filter: 'all',
   sq: '',
   sy: null,
-  sm: null,                 // null = 全年；0-11 = 月份
-  hideFuture: false,        // 隱藏未到日期
+  sm: null,
+  hideFuture: false,
   theme: ThemeManager.get(),
   loading: true,
   loadingDrive: false,
@@ -74,10 +75,11 @@ async function loadInitial() {
     state.sy = now.getFullYear();
     state.sm = now.getMonth();
     state.loading = false;
-    render();  // Notion 資料先顯示
+    render();
 
-    // 然後背景載入當月的 Drive 資料
+    // 背景並行載入：當月 Drive 錄音 + 所有預查文件
     loadDriveForMonth(state.sy, state.sm);
+    loadStudyDocs();
   } catch (err) {
     state.loading = false;
     document.getElementById('root').innerHTML = '<div class="empty">載入失敗：' + err.message + '</div>';
@@ -117,6 +119,18 @@ async function loadDriveForMonth(year, month0) {
       state.loadingDrive = false;
       render();
     }
+  }
+}
+
+// 載入所有預查文件（只跑一次，全部資料夾掃描）
+async function loadStudyDocs() {
+  if (!gasApi.enabled()) return;
+  try {
+    const result = await gasApi.listStudy();
+    state.studyDocs = (result.docs || []).filter(d => d.topic);
+    render();
+  } catch (e) {
+    console.warn('[loadStudyDocs] 失敗:', e.message);
   }
 }
 
@@ -203,15 +217,25 @@ function buildRowsForMonth(year, month0) {
 function enrichRow(slot) {
   const dateKey = `${slot.year}-${pad2(slot.month)}-${pad2(slot.day)}`;
 
+  // 1. Notion 已有紀錄 → filled
   const notion = state.notionMeetings.find(function (m) {
     return m.dateKey === dateKey && m.type === slot.type;
   });
   if (notion) return Object.assign({}, slot, notion, { _state: 'filled' });
 
+  // 2. Drive 錄音 → pending（待轉錄音）
   const drive = state.driveFiles.find(function (f) {
     return f.date === dateKey && f.type === slot.type;
   });
   if (drive) return Object.assign({}, slot, { _state: 'pending', driveFile: drive });
+
+  // 3. 週三晚間且有預查文件 → pending-study（待處理預查）
+  if (slot.type === '週三晚間') {
+    const study = state.studyDocs.find(function (d) {
+      return d.estimatedDate === dateKey;
+    });
+    if (study) return Object.assign({}, slot, { _state: 'pending-study', studyDoc: study });
+  }
 
   const now = new Date();
   const slotDate = new Date(slot.year, slot.month - 1, slot.day);
@@ -420,10 +444,24 @@ function renderRow(r) {
       const elapsedStr = min > 0 ? `${min}:${String(sec).padStart(2, '0')}` : `${sec}s`;
       badgeText = `<span class="spinner"></span>處理中 ${elapsedStr}`;
     } else {
-      badgeText = '待處理';
+      badgeText = '🎙 待轉錄';
     }
     clickable = !isProcessing && gasApi.enabled();
     action = `data-action="process" data-date="${r.year}-${pad2(r.month)}-${pad2(r.day)}" data-type="${escapeAttr(r.type)}"`;
+  } else if (st === 'pending-study') {
+    badgeClass = 'badge-pending';
+    if (isProcessing) {
+      const startedAt = state.processing[procKey];
+      const elapsedMs = Date.now() - (typeof startedAt === 'number' ? startedAt : Date.now());
+      const min = Math.floor(elapsedMs / 60000);
+      const sec = Math.floor((elapsedMs % 60000) / 1000);
+      const elapsedStr = min > 0 ? `${min}:${String(sec).padStart(2, '0')}` : `${sec}s`;
+      badgeText = `<span class="spinner"></span>處理中 ${elapsedStr}`;
+    } else {
+      badgeText = '📖 待處理預查';
+    }
+    clickable = !isProcessing && gasApi.enabled();
+    action = `data-action="process-study" data-fileid="${escapeAttr(r.studyDoc.id)}"`;
   } else if (st === 'future') {
     badgeClass = 'badge-future';
     badgeText = '預定';
@@ -443,7 +481,8 @@ function renderRow(r) {
   h += '<div class="info">';
 
   const displayTopic = (st === 'filled' ? r.topic : null)
-                    || (r.driveFile ? r.driveFile.topic : null);
+                    || (r.driveFile ? r.driveFile.topic : null)
+                    || (r.studyDoc ? r.studyDoc.topic : null);
 
   if (displayTopic) {
     h += `<div class="info-title">${escapeHtml(displayTopic)}</div>`;
@@ -452,7 +491,8 @@ function renderRow(r) {
   }
 
   const displaySpeaker = (st === 'filled' ? r.speaker : null)
-                      || (r.driveFile ? r.driveFile.speaker : null);
+                      || (r.driveFile ? r.driveFile.speaker : null)
+                      || (r.studyDoc ? r.studyDoc.speaker : null);
 
   h += '<div class="info-meta">';
   h += `<span class="type-tag">${escapeHtml(r.type)}</span>`;
@@ -507,6 +547,8 @@ function bindEvents() {
       if (id) location.href = 'meeting.html?id=' + encodeURIComponent(id) + (state.theme !== 'adult' ? '&theme=' + state.theme : '');
     } else if (action === 'process') {
       handleProcess(b.dataset.date, b.dataset.type);
+    } else if (action === 'process-study') {
+      handleProcessStudy(b.dataset.fileid);
     }
   });
 }
@@ -546,6 +588,45 @@ async function handleProcess(date, type) {
     topic: topic || '',
     speaker: speaker || '',
     sizeMB: sizeMB ? String(sizeMB) : '',
+    processing: '1',
+  });
+  if (state.theme !== 'adult') qp.set('theme', state.theme);
+  location.href = 'meeting.html?' + qp.toString();
+}
+
+async function handleProcessStudy(fileId) {
+  const doc = state.studyDocs.find(d => d.id === fileId);
+  if (!doc) return;
+  const key = `study_${fileId}`;
+  if (state.processing[key]) return;
+
+  const promptLines = [
+    `處理預查文件「${doc.topic}」${doc.speaker ? '(' + doc.speaker + ')' : ''}？`,
+    '',
+    `估計日期：${doc.estimatedDate}（實際日期將從內文偵測）`,
+    `檔案大小：${doc.sizeMB} MB`,
+    '',
+    '會將文件內容寫入 Notion（不經過 Gemini），預計 10-30 秒。',
+    '確認後跳到聚會頁等待結果。',
+  ];
+  if (!confirm(promptLines.join('\n'))) return;
+
+  state.processing[key] = Date.now();
+  startProcessingTicker();
+  render();
+
+  // Fire 處理（不 await）
+  gasApi.processStudy(fileId)
+    .then(r => console.log('[processStudy]', r))
+    .catch(e => console.warn('[processStudy] worker 失敗', e.message));
+
+  // 跳到 meeting 頁等待（用 estimatedDate + 週三晚間 + studyFileId）
+  const qp = new URLSearchParams({
+    date: doc.estimatedDate,
+    type: '週三晚間',
+    topic: doc.topic || '',
+    speaker: doc.speaker || '',
+    studyFileId: fileId,
     processing: '1',
   });
   if (state.theme !== 'adult') qp.set('theme', state.theme);

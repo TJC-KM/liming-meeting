@@ -60,8 +60,6 @@ const gasApi = {
 
   async process(date, type) {
     const params = new URLSearchParams({ date, type });
-    // Worker 處理需要 1-3 分鐘，連線中可能斷。即使 body 空了，
-    // 處理仍在 Cloudflare 後台繼續跑，由 polling 偵測完成。
     const r = await fetch(`${CONFIG.API_URL}/drive/process?${params}`, {
       method: 'POST',
       cache: 'no-store',
@@ -70,9 +68,7 @@ const gasApi = {
       console.warn('[process fetch]', err.message);
       return null;
     });
-
-    if (!r) return { success: true, queued: true };  // 連線失敗也視為 queued
-
+    if (!r) return { success: true, queued: true };
     let data;
     try {
       const text = await r.text();
@@ -80,8 +76,37 @@ const gasApi = {
     } catch (e) {
       data = { success: true, queued: true };
     }
+    if (data.error && !data.success) throw new Error(data.error);
+    return data;
+  },
 
-    // 只有 Worker 明確回 error 才報錯（找不到檔案、Notion 重複等）
+  // 列出所有預查文件（快速，含估計日期）
+  async listStudy() {
+    const r = await fetch(`${CONFIG.API_URL}/study/list`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`Worker HTTP ${r.status}`);
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    return data;
+  },
+
+  // 處理單篇預查
+  async processStudy(fileId) {
+    const r = await fetch(`${CONFIG.API_URL}/study/process?fileId=${encodeURIComponent(fileId)}`, {
+      method: 'POST',
+      cache: 'no-store',
+      keepalive: true,
+    }).catch(err => {
+      console.warn('[processStudy fetch]', err.message);
+      return null;
+    });
+    if (!r) return { success: true, queued: true };
+    let data;
+    try {
+      const text = await r.text();
+      data = text ? JSON.parse(text) : { success: true, queued: true };
+    } catch (e) {
+      data = { success: true, queued: true };
+    }
     if (data.error && !data.success) throw new Error(data.error);
     return data;
   },

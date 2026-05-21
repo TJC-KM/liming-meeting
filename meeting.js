@@ -8,6 +8,7 @@
   var qTopic = params.get('topic') || '';
   var qSpeaker = params.get('speaker') || '';
   var qSizeMB = params.get('sizeMB') || '';
+  var qStudyFileId = params.get('studyFileId') || '';
   var processing = params.get('processing') === '1';
   var processingStartedAt = Date.now();
   var pollTicker = null;
