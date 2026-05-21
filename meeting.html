@@ -18,6 +18,24 @@
 <div id="root"><div class="loading">載入中...</div></div>
 </div>
 
+<!-- 留言面板 -->
+<div class="comment-panel" id="commentPanel">
+  <div class="cp-header">
+    <h3>💬 心得回饋</h3>
+    <span class="cp-folder-name" id="cpFolderName"></span>
+    <button class="cp-close" id="cpClose">✕</button>
+  </div>
+  <div class="cp-list" id="cpList"><div class="cp-loading">載入中…</div></div>
+  <div class="cp-form">
+    <input type="text" id="cpName" placeholder="你的名字（可不填）" maxlength="20">
+    <textarea id="cpText" placeholder="寫下你的心得或回響…" maxlength="500"></textarea>
+    <button class="cp-submit" id="cpSubmit">送出心得</button>
+  </div>
+</div>
+
+<!-- Share toast -->
+<div class="share-toast" id="shareToast">🔗 連結已複製！</div>
+
 <script src="api.js"></script>
 <script src="meeting.js"></script>
 </body>

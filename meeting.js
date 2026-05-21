@@ -33,10 +33,136 @@
       .then(function (m) {
         document.title = (m.topic || '聚會紀錄') + ' - 教會聚會紀錄';
         document.getElementById('root').innerHTML = renderMeeting(m);
+        bindActionButtons(m);
       })
       .catch(function (err) {
         document.getElementById('root').innerHTML = '<div class="empty">載入失敗：' + err.message + '</div>';
       });
+  }
+
+  // === 分享 + 心得 ===
+  function bindActionButtons(m) {
+    const shareBtn = document.getElementById('shareBtn');
+    if (shareBtn) shareBtn.addEventListener('click', shareLink);
+
+    const commentsBtn = document.getElementById('commentsBtn');
+    if (commentsBtn && m.id) {
+      commentsBtn.addEventListener('click', function () { openComments(m); });
+    }
+
+    const cpClose = document.getElementById('cpClose');
+    if (cpClose) cpClose.addEventListener('click', closeComments);
+
+    const cpSubmit = document.getElementById('cpSubmit');
+    if (cpSubmit) cpSubmit.addEventListener('click', function () { submitComment(m); });
+  }
+
+  function shareLink() {
+    // 分享乾淨的 URL（沒有 processing 等臨時參數）
+    const u = new URL(location.href);
+    const cleanParams = new URLSearchParams();
+    if (u.searchParams.get('id')) cleanParams.set('id', u.searchParams.get('id'));
+    if (u.searchParams.get('theme')) cleanParams.set('theme', u.searchParams.get('theme'));
+    const shareUrl = u.origin + u.pathname + (cleanParams.toString() ? '?' + cleanParams.toString() : '');
+
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(shareUrl).then(showShareToast).catch(() => fallbackCopy(shareUrl));
+    } else {
+      fallbackCopy(shareUrl);
+    }
+  }
+
+  function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      showShareToast();
+    } catch (e) {
+      showShareToast('複製失敗，請手動複製：' + text, true);
+    }
+    document.body.removeChild(ta);
+  }
+
+  function showShareToast(msg, isError) {
+    const t = document.getElementById('shareToast');
+    if (!t) return;
+    t.textContent = msg || '🔗 連結已複製！';
+    t.classList.toggle('error', !!isError);
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+  }
+
+  function openComments(m) {
+    document.getElementById('cpFolderName').textContent = m.topic || '';
+    document.getElementById('commentPanel').classList.add('on');
+    loadComments(m.id);
+  }
+
+  function closeComments() {
+    document.getElementById('commentPanel').classList.remove('on');
+  }
+
+  async function loadComments(meetingId) {
+    const list = document.getElementById('cpList');
+    list.innerHTML = '<div class="cp-loading">載入中…</div>';
+    try {
+      const url = `${CONFIG.COMMENTS_GAS_URL}?mode=getComments&folderId=${encodeURIComponent(meetingId)}`;
+      const r = await fetch(url);
+      const data = await r.json();
+      const comments = data.comments || [];
+      if (comments.length === 0) {
+        list.innerHTML = '<div class="cp-empty">還沒有心得，成為第一個留言的人吧！✨</div>';
+        return;
+      }
+      list.innerHTML = comments.map(c => `
+        <div class="comment-item">
+          <div class="ci-top">
+            <span class="ci-name">${escapeHtml(c.name || '匿名')}</span>
+            <span class="ci-date">${escapeHtml(c.date || '')}</span>
+          </div>
+          <div class="ci-text">${escapeHtml(c.text || '')}</div>
+        </div>
+      `).join('');
+    } catch (e) {
+      list.innerHTML = '<div class="cp-empty">載入失敗，請稍後再試</div>';
+    }
+  }
+
+  async function submitComment(m) {
+    const name = document.getElementById('cpName').value.trim();
+    const text = document.getElementById('cpText').value.trim();
+    if (!text) { alert('請輸入心得內容'); return; }
+
+    const btn = document.getElementById('cpSubmit');
+    btn.disabled = true;
+    btn.textContent = '送出中…';
+
+    try {
+      const url = `${CONFIG.COMMENTS_GAS_URL}?mode=addComment`
+        + `&folderId=${encodeURIComponent(m.id)}`
+        + `&folderName=${encodeURIComponent(m.topic || '')}`
+        + `&name=${encodeURIComponent(name)}`
+        + `&text=${encodeURIComponent(text)}`;
+      const r = await fetch(url);
+      const data = await r.json();
+      if (data.status === 'success') {
+        document.getElementById('cpName').value = '';
+        document.getElementById('cpText').value = '';
+        loadComments(m.id);
+      } else {
+        alert('送出失敗：' + (data.message || '未知錯誤'));
+      }
+    } catch (e) {
+      alert('網路錯誤，請稍後再試');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '送出心得';
+    }
   }
 
   function showProcessingPlaceholder() {

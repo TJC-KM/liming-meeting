@@ -10,6 +10,8 @@ const CONFIG = {
   USE_MOCK: false,
   API_URL: 'https://church-meeting-api.c3012312.workers.dev',
   GAS_URL: 'https://script.google.com/macros/s/AKfycbwvdpxMqKCtpcDf6dzjvprv46kNS1Gwj0C1fPdQO7dTfTOQquvzPEZL5_aYeAYUUMs/exec',
+  // 共用 liming-news2026 的留言 GAS Web App（同一張 Google Sheet）
+  COMMENTS_GAS_URL: 'https://script.google.com/macros/s/AKfycbzWzh7mEl9wt7ehw7SWLQpwpJlbRB6AoDhSiFSex7YC2sp92ceICPct4AO64LiyN8lbPg/exec',
 };
 
 // === Notion 端（Worker proxy）===
