@@ -75,6 +75,11 @@ a{color:inherit;text-decoration:none}
 /* === DAY CARD === */
 .day-card{display:flex;background:var(--bg);border:1px solid var(--bd);border-radius:var(--radius-lg);overflow:hidden;transition:border-color .12s}
 .day-card:hover{border-color:var(--bd2)}
+/* 空白日（沒任何聚會）：弱化視覺，不搶注意力 */
+.day-card-empty{opacity:.5;background:transparent;border-style:dashed}
+.day-card-empty .day-date{background:transparent}
+.day-card-empty .day-items{display:flex;align-items:center;padding:0 14px;color:var(--tx3);font-size:13px}
+.day-empty-hint{padding:8px 0;letter-spacing:2px}
 .day-date{flex-shrink:0;width:60px;background:var(--bg2);border-right:1px solid var(--bd);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px;gap:1px}
 .day-date .date-day{font-size:22px;font-weight:700;line-height:1.1}
 .day-date .date-mon{font-size:11px;color:var(--tx2)}

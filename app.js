@@ -1,15 +1,12 @@
 // 列表頁：行事曆視圖
-// Notion 資料一次抓全部，Drive 資料按月份懶載入（搭配 sessionStorage 快取）
-
-const SCHEDULE = {
-  0: ['週日聚會'],
-  2: ['週二晚間'],
-  3: ['週三晚間'],
-  5: ['週五晚間'],
-  6: ['安息日上午', '安息日下午'],
-};
-
-const ALL_TYPES = ['週二晚間', '週三晚間', '週五晚間', '安息日上午', '安息日下午', '週日聚會'];
+//
+// 資料流：
+//   1. 用真實日曆生出該月（或全年）的每一天
+//   2. 把 Notion / Drive 錄音 / Study 預查依日期+topic 附到對應日子
+//   3. dedup 規則：同日同 topic 視為同一場聚會（Notion 優先，Drive/Study 補資訊）
+//   4. 沒有資料的日子也存在，渲染成空白的 day-card
+//
+// 沒有 SCHEDULE 這種「預期格子」概念。哪天有資料就出現哪天。
 
 // 篩選 chips：依星期（週六顯示為「安息日」）
 const WEEKDAY_FILTERS = [
@@ -204,121 +201,114 @@ function selectYear(year) {
   loadDriveForYear(year);
 }
 
-// === 行事曆生成 ===
+// === 日曆生成 ===
 
-function buildRowsForMonth(year, month0) {
-  const rows = [];
+// 真實日曆：產生指定月份所有日子的空 day-card（items 為空陣列）
+function buildDaysForMonth(year, month0) {
   const daysInMonth = new Date(year, month0 + 1, 0).getDate();
+  const days = [];
   for (let d = 1; d <= daysInMonth; d++) {
-    const dt = new Date(year, month0, d);
-    const dow = dt.getDay();
-    const expected = SCHEDULE[dow] || [];
-    expected.forEach(function (type) {
-      rows.push({ year: year, month: month0 + 1, day: d, dow: dow, type: type });
+    days.push({
+      year: year,
+      month: month0 + 1,
+      day: d,
+      dow: new Date(year, month0, d).getDay(),
+      items: [],
     });
   }
-  return rows;
+  return days;
 }
 
-function enrichRow(slot) {
-  const dateKey = `${slot.year}-${pad2(slot.month)}-${pad2(slot.day)}`;
-
-  // 1. Notion 已有紀錄 → filled
-  const notion = state.notionMeetings.find(function (m) {
-    return m.dateKey === dateKey && m.type === slot.type;
-  });
-  if (notion) return Object.assign({}, slot, notion, { _state: 'filled' });
-
-  // 2. Drive 錄音 → pending（待轉錄音）
-  const drive = state.driveFiles.find(function (f) {
-    return f.date === dateKey && f.type === slot.type;
-  });
-  if (drive) return Object.assign({}, slot, { _state: 'pending', driveFile: drive });
-
-  // 3. 週三晚間且有預查文件 → pending-study（待處理預查）
-  if (slot.type === '週三晚間') {
-    const study = state.studyDocs.find(function (d) {
-      return d.estimatedDate === dateKey;
-    });
-    if (study) return Object.assign({}, slot, { _state: 'pending-study', studyDoc: study });
-  }
-
-  const now = new Date();
-  const slotDate = new Date(slot.year, slot.month - 1, slot.day);
-  const isFuture = slotDate > now;
-  return Object.assign({}, slot, { _state: isFuture ? 'future' : 'empty' });
+// 找到對應日子的 day-card；若日子不在範圍內回 null
+function findDay(days, year, month, day) {
+  return days.find(d => d.year === year && d.month === month && d.day === day) || null;
 }
 
-function addSpecialEvents(rows, year, month0) {
-  const seen = new Set(rows.filter(r => r.id).map(r => r.id));
+// 同一天「同 topic」視為同一場聚會：將 Drive / Study 資訊合併到既有 item
+// 同一天「不同 topic」則並存（例：安息日上午 + 下午）
+function attachEntries(days) {
+  // Layer 1：Notion 紀錄 → filled
   state.notionMeetings.forEach(function (m) {
-    if (!m.date) return;
-    if (m.year !== year || m.month !== month0 + 1) return;
-    if (seen.has(m.id)) return;
-    rows.push(Object.assign({}, m, {
-      year: m.year, month: m.month, day: m.day, dow: m.dow,
-      _state: 'filled', _special: true,
-    }));
+    const dayObj = findDay(days, m.year, m.month, m.day);
+    if (!dayObj) return;
+    dayObj.items.push(Object.assign({}, m, { _state: 'filled' }));
+  });
+
+  // Layer 2：Drive 錄音 → 已有同 topic 就合併，否則新增 pending
+  state.driveFiles.forEach(function (f) {
+    if (!f.date || !f.topic) return;
+    const parts = f.date.split('-').map(Number);
+    const dayObj = findDay(days, parts[0], parts[1], parts[2]);
+    if (!dayObj) return;
+    const existing = dayObj.items.find(it => it.topic === f.topic);
+    if (existing) {
+      existing.driveFile = f;
+      return;
+    }
+    dayObj.items.push({
+      year: parts[0], month: parts[1], day: parts[2], dow: dayObj.dow,
+      topic: f.topic, speaker: f.speaker, type: f.type,
+      driveFile: f, _state: 'pending',
+    });
+  });
+
+  // Layer 3：Study 預查 → 已有同 topic 就合併，否則新增 pending-study
+  state.studyDocs.forEach(function (doc) {
+    if (!doc.estimatedDate || !doc.topic) return;
+    const parts = doc.estimatedDate.split('-').map(Number);
+    const dayObj = findDay(days, parts[0], parts[1], parts[2]);
+    if (!dayObj) return;
+    const existing = dayObj.items.find(it => it.topic === doc.topic);
+    if (existing) {
+      existing.studyDoc = doc;
+      return;
+    }
+    dayObj.items.push({
+      year: parts[0], month: parts[1], day: parts[2], dow: dayObj.dow,
+      topic: doc.topic, speaker: doc.speaker, type: '週三晚間',
+      studyDoc: doc, _state: 'pending-study',
+    });
   });
 }
 
-function getRows() {
-  let rows = [];
+function getDays() {
+  let days = [];
   if (state.sm !== null) {
-    rows = buildRowsForMonth(state.sy, state.sm).map(enrichRow);
-    addSpecialEvents(rows, state.sy, state.sm);
+    days = buildDaysForMonth(state.sy, state.sm);
   } else {
-    // 全年：生成全年 12 個月的所有 slot，搭配已載入的 Drive 資料
     for (let m = 0; m < 12; m++) {
-      const monthRows = buildRowsForMonth(state.sy, m).map(enrichRow);
-      addSpecialEvents(monthRows, state.sy, m);
-      rows = rows.concat(monthRows);
+      days = days.concat(buildDaysForMonth(state.sy, m));
     }
   }
+  attachEntries(days);
 
-  rows.sort(function (a, b) {
-    if (a.year !== b.year) return b.year - a.year;
-    if (a.month !== b.month) return b.month - a.month;
-    if (a.day !== b.day) return b.day - a.day;
-    return ALL_TYPES.indexOf(a.type) - ALL_TYPES.indexOf(b.type);
-  });
-
+  // 篩選
+  const now = new Date();
   if (state.filter !== 'all') {
     const targetDow = parseInt(state.filter, 10);
-    rows = rows.filter(r => new Date(r.year, r.month - 1, r.day).getDay() === targetDow);
+    days = days.filter(d => d.dow === targetDow);
   }
   if (state.hideFuture) {
-    rows = rows.filter(r => r._state !== 'future');
+    days = days.filter(d => new Date(d.year, d.month - 1, d.day) <= now);
   }
   if (state.sq) {
     const q = state.sq.toLowerCase();
-    rows = rows.filter(function (r) {
-      const topic = (r.topic || (r.driveFile && r.driveFile.topic) || '').toLowerCase();
-      const speaker = r.speaker || (r.driveFile && r.driveFile.speaker) || '';
-      const type = r.type || '';
-      return topic.indexOf(q) >= 0
-        || speaker.indexOf(q) >= 0
-        || type.indexOf(q) >= 0;
-    });
+    days = days.filter(d => d.items.some(item => {
+      const topic = (item.topic || '').toLowerCase();
+      const speaker = (item.speaker || '').toLowerCase();
+      return topic.indexOf(q) >= 0 || speaker.indexOf(q) >= 0;
+    }));
   }
-  return rows;
-}
 
-// 把 rows 依日期分組成「日卡片」
-function groupByDay(rows) {
-  const map = {};
-  rows.forEach(function (r) {
-    const key = `${r.year}-${r.month}-${r.day}`;
-    if (!map[key]) {
-      map[key] = {
-        year: r.year, month: r.month, day: r.day,
-        dow: new Date(r.year, r.month - 1, r.day).getDay(),
-        items: [],
-      };
-    }
-    map[key].items.push(r);
+  // 排序：新→舊；同日內 items 用 type 大致排（早晨→晚間）
+  days.sort(function (a, b) {
+    if (a.year !== b.year) return b.year - a.year;
+    if (a.month !== b.month) return b.month - a.month;
+    return b.day - a.day;
   });
-  return Object.values(map);
+  days.forEach(d => d.items.sort((a, b) => (a.type || '').localeCompare(b.type || '')));
+
+  return days;
 }
 
 function getYears() {
@@ -365,12 +355,15 @@ function _doRender() {
     return;
   }
 
-  const rows = getRows();
+  const days = getDays();
   const years = getYears();
   const mc = getMonthCounts();
 
-  const filled = rows.filter(r => r._state === 'filled').length;
-  const pending = rows.filter(r => r._state === 'pending').length;
+  // 統計：以「items」為單位（一天可能有多場聚會）
+  const allItems = days.flatMap(d => d.items);
+  const filled = allItems.filter(i => i._state === 'filled').length;
+  const pending = allItems.filter(i => i._state === 'pending' || i._state === 'pending-study').length;
+  const daysWithMeeting = days.filter(d => d.items.length > 0).length;
 
   let h = '';
 
@@ -405,9 +398,9 @@ function _doRender() {
 
   h += '<div class="stats">';
   if (state.sm !== null) {
-    h += '<span class="s-item">本月 <strong>' + rows.length + '</strong> 場聚會</span>';
+    h += '<span class="s-item">本月 <strong>' + daysWithMeeting + '</strong> 天有聚會</span>';
   } else {
-    h += '<span class="s-item">全年 <strong>' + rows.length + '</strong> 筆紀錄</span>';
+    h += '<span class="s-item">全年 <strong>' + daysWithMeeting + '</strong> 天有聚會</span>';
   }
   h += '<span class="s-item"><span class="dot-pub"></span>已紀錄 ' + filled + '</span>';
   if (gasApi.enabled()) {
@@ -421,10 +414,9 @@ function _doRender() {
   }
   h += '</div>';
 
-  if (rows.length === 0) {
-    h += '<div class="empty">找不到符合條件的聚會紀錄</div>';
+  if (days.length === 0) {
+    h += '<div class="empty">找不到符合條件的日子</div>';
   } else {
-    const days = groupByDay(rows);
     h += '<div class="list" id="ml">';
     days.forEach(function (d) {
       h += renderDay(d);
@@ -438,16 +430,23 @@ function _doRender() {
 
 function renderDay(d) {
   const dowStr = dowLabel(d.year, d.month, d.day).replace('週', '');
-  let h = '<div class="day-card">';
+  const isEmpty = d.items.length === 0;
+  const cardClass = 'day-card' + (isEmpty ? ' day-card-empty' : '');
+
+  let h = `<div class="${cardClass}">`;
   h += '<div class="day-date">';
   h += `<div class="date-day">${d.day}</div>`;
   h += `<div class="date-mon">${d.month}月</div>`;
   h += `<div class="date-dow">${dowStr}</div>`;
   h += '</div>';
   h += '<div class="day-items">';
-  d.items.forEach(function (item) {
-    h += renderRow(item);
-  });
+  if (isEmpty) {
+    h += '<div class="day-empty-hint">—</div>';
+  } else {
+    d.items.forEach(function (item) {
+      h += renderRow(item);
+    });
+  }
   h += '</div>';
   h += '</div>';
   return h;
