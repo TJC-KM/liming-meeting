@@ -43,10 +43,11 @@
 
   // === 分享 + 心得 ===
 
-  // 從 m.audioUrl 抽出 Drive 檔案 ID（留言用，比 Notion ID 穩定）
+  // 抽出 Drive 檔案 ID 當留言識別（錄音優先，否則用預查文件）
   function getRecordingId(m) {
-    if (!m.audioUrl) return null;
-    const match = m.audioUrl.match(/\/d\/([^\/]+)/);
+    const url = m.audioUrl || m.studyUrl;
+    if (!url) return null;
+    const match = url.match(/\/d\/([^\/]+)/);
     return match ? match[1] : null;
   }
 
@@ -304,6 +305,12 @@
       h += '<a class="action-btn" href="' + escapeAttr(m.attachmentUrl) + '" target="_blank" rel="noopener">';
       h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>';
       h += '附件資料夾</a>';
+    }
+    // 下載預查文件
+    if (m.studyUrl) {
+      h += '<a class="action-btn" href="' + escapeAttr(m.studyUrl) + '" target="_blank" rel="noopener">';
+      h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+      h += '下載預查文件</a>';
     }
     if (m.id) {
       const notionUrl = 'https://www.notion.so/' + m.id.replace(/-/g, '');
