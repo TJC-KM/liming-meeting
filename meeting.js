@@ -97,12 +97,13 @@
 
   // 把 Notion blocks 渲染成 section 卡片
   // heading_2 = section 標題；heading_3 = subhead；bulleted_list_item = list；其他 = paragraph
-  // 「簡易重點」section 在 body 中會被跳過（已從 property 顯示在最上面）
+  // 「簡易重點」section 整段跳過（標題與內容都跳，已從 property 顯示在最上面）
   function renderBlocks(blocks) {
     var h = '';
     var section = null;
     var sectionTitle = '';
     var inList = false;
+    var inSimpleSection = false;  // 是否在「簡易重點」section 內（需要整段跳過）
 
     function openSection(title) {
       closeSection();
@@ -131,14 +132,20 @@
 
     blocks.forEach(function (b) {
       if (b.type === 'heading_2') {
-        if (b.text.indexOf('簡易重點') >= 0) {
-          // 已從 property 顯示，跳過 body 內的同名 section
+        // 進入新 section；判斷是否要跳過
+        inSimpleSection = b.text.indexOf('簡易重點') >= 0;
+        if (inSimpleSection) {
           closeSection();
-          sectionTitle = ''; section = null;
           return;
         }
         openSection(b.text);
-      } else if (b.type === 'heading_3') {
+        return;
+      }
+
+      // 簡易重點 section 內的所有內容都跳過
+      if (inSimpleSection) return;
+
+      if (b.type === 'heading_3') {
         if (section !== null) {
           closeList();
           section += '<div class="md-subhead">' + escapeHtml(b.text) + '</div>';
