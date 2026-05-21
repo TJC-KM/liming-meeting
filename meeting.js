@@ -9,9 +9,11 @@
   var qSpeaker = params.get('speaker') || '';
   var qSizeMB = params.get('sizeMB') || '';
   var qStudyFileId = params.get('studyFileId') || '';
+  var qAudioFileId = params.get('audioFileId') || '';
   var processing = params.get('processing') === '1';
   var processingStartedAt = Date.now();
   var pollTicker = null;
+  var processingSkeletonRendered = false;
 
   ColorThemeManager.apply(ColorThemeManager.get());
 
@@ -23,7 +25,8 @@
     loadById(id);
   } else if (qDate && qType) {
     // 等待模式：Worker 還在處理，poll Notion 直到出現
-    showProcessingPlaceholder();
+    // 但 player / download / 心得 是 Notion 寫入前就能用，所以一次性 render skeleton
+    renderProcessingSkeleton();
     startPolling();
   } else {
     document.getElementById('root').innerHTML = '<div class="empty">缺少聚會 ID 或 date+type</div>';
@@ -196,43 +199,134 @@
     }
   }
 
-  function showProcessingPlaceholder() {
+  // 拼一個「處理中聚會」的合成物件，餵給心得 / 下載按鈕邏輯
+  function buildProcessingMeeting() {
+    return {
+      topic: qTopic,
+      type: qType,
+      date: qDate,
+      speaker: qSpeaker,
+      audioUrl: qAudioFileId ? 'https://drive.google.com/file/d/' + qAudioFileId + '/view' : null,
+      studyUrl: qStudyFileId ? 'https://drive.google.com/file/d/' + qStudyFileId + '/view' : null,
+    };
+  }
+
+  function formatElapsed(ms) {
+    var min = Math.floor(ms / 60000);
+    var sec = Math.floor((ms % 60000) / 1000);
+    return min > 0 ? min + ':' + String(sec).padStart(2, '0') : sec + 's';
+  }
+
+  // 處理中：一次性 render 完整骨架（header + player + actions + AI skeleton）
+  // 之後計時器只更新 #processingBadge 內文，不重 render，避免重複 bind
+  function renderProcessingSkeleton() {
     document.title = (qTopic || '處理中') + ' - 處理中 - 教會聚會紀錄';
-    var elapsedMs = Date.now() - processingStartedAt;
-    var min = Math.floor(elapsedMs / 60000);
-    var sec = Math.floor((elapsedMs % 60000) / 1000);
-    var elapsedStr = min > 0 ? `${min}:${String(sec).padStart(2, '0')}` : `${sec}s`;
+    var m = buildProcessingMeeting();
+    var elapsedStr = formatElapsed(Date.now() - processingStartedAt);
 
     var h = '';
+    // Header（低調的「處理中」徽章，不再用搶眼的 spinner）
     h += '<div class="meeting-header">';
     h += '<div class="meeting-title">' + escapeHtml(qTopic || '(處理中)') + '</div>';
     h += '<div class="meeting-meta">';
     h += '<span class="type-tag">' + escapeHtml(qType) + '</span>';
-    h += '<span class="badge badge-pending"><span class="spinner"></span>處理中 ' + elapsedStr + '</span>';
+    h += '<span class="badge badge-processing" id="processingBadge">處理中 · ' + elapsedStr + '</span>';
     h += '<span>📅 ' + escapeHtml(qDate) + '</span>';
     if (qSpeaker) h += '<span>🎤 ' + escapeHtml(qSpeaker) + '</span>';
     h += '</div></div>';
 
-    h += '<div class="section">';
-    h += '<div class="section-title">⏳ 正在處理</div>';
+    // 嵌入播放器（只有錄音模式才有）
+    if (qAudioFileId) {
+      h += '<div class="audio-embed">';
+      h += '<iframe src="https://drive.google.com/file/d/' + escapeAttr(qAudioFileId) + '/preview" allow="autoplay" frameborder="0"></iframe>';
+      h += '</div>';
+    }
+
+    // 操作列
+    h += '<div class="actions">';
+    if (m.audioUrl) {
+      h += '<a class="action-btn" href="' + escapeAttr(m.audioUrl) + '" target="_blank" rel="noopener">';
+      h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+      h += '下載錄音</a>';
+    }
+    if (m.studyUrl) {
+      h += '<a class="action-btn" href="' + escapeAttr(m.studyUrl) + '" target="_blank" rel="noopener">';
+      h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+      h += '下載預查文件</a>';
+    }
+    h += '<button class="action-btn" disabled title="處理完成後可分享">';
+    h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>';
+    h += '分享連結</button>';
+    if (m.audioUrl || m.studyUrl) {
+      h += '<button class="action-btn" id="commentsBtn">';
+      h += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>';
+      h += '心得回饋</button>';
+    }
+    h += '</div>';
+
+    // 提示橫幅：告訴使用者現在能做什麼
+    h += '<div class="processing-hint">';
+    h += '<span class="ph-icon">✨</span>';
+    h += '<div class="ph-text">';
+    h += '<div class="ph-title">AI 正在整理重點與經文，預估 1–3 分鐘</div>';
+    h += '<div class="ph-sub">這段時間您可以先' + (qAudioFileId ? '聽錄音、' : '') + '下載原始檔案，或留下您的心得感想 👇</div>';
+    h += '</div></div>';
+
+    // 三段 skeleton loader（佔位視覺效果，暗示「這邊還在補」）
+    h += '<div class="section section-skeleton">';
+    h += '<div class="section-title">📝 簡易重點</div>';
     h += '<div class="section-body">';
-    h += '<p>Gemini AI 正在聆聽錄音、整理重點與經文，預估 1-3 分鐘。</p>';
-    h += '<p style="color:var(--tx2)">完成後此頁會自動更新，**不需要刷新或離開**。</p>';
-    if (qSizeMB) h += '<p style="color:var(--tx3);font-size:13px">檔案大小：' + qSizeMB + ' MB</p>';
+    h += '<div class="skeleton-line" style="width:90%"></div>';
+    h += '<div class="skeleton-line" style="width:75%"></div>';
+    h += '<div class="skeleton-line" style="width:85%"></div>';
+    h += '</div></div>';
+
+    h += '<div class="section section-skeleton">';
+    h += '<div class="section-title">📖 完整重點</div>';
+    h += '<div class="section-body">';
+    h += '<div class="skeleton-line" style="width:95%"></div>';
+    h += '<div class="skeleton-line" style="width:88%"></div>';
+    h += '<div class="skeleton-line" style="width:92%"></div>';
+    h += '<div class="skeleton-line" style="width:70%"></div>';
+    h += '</div></div>';
+
+    h += '<div class="section section-skeleton">';
+    h += '<div class="section-title">✝️ 參考經文</div>';
+    h += '<div class="section-body">';
+    h += '<div class="skeleton-line" style="width:60%"></div>';
+    h += '<div class="skeleton-line" style="width:90%"></div>';
     h += '</div></div>';
 
     document.getElementById('root').innerHTML = h;
+
+    // 綁定心得 / 留言面板按鈕（一次性）
+    const commentsBtn = document.getElementById('commentsBtn');
+    if (commentsBtn) commentsBtn.addEventListener('click', function () { openComments(m); });
+    const cpClose = document.getElementById('cpClose');
+    if (cpClose) cpClose.addEventListener('click', closeComments);
+    const cpSubmit = document.getElementById('cpSubmit');
+    if (cpSubmit) cpSubmit.addEventListener('click', function () { submitComment(m); });
+
+    processingSkeletonRendered = true;
+  }
+
+  // 計時器：每秒只動 badge 文字，不碰其他元素
+  function updateProcessingTimer() {
+    var badge = document.getElementById('processingBadge');
+    if (badge) {
+      badge.textContent = '處理中 · ' + formatElapsed(Date.now() - processingStartedAt);
+    }
   }
 
   function startPolling() {
     var POLL_INTERVAL_MS = 10000;  // 每 10 秒
     var MAX_POLL_MS = 12 * 60 * 1000;  // 12 分鐘上限
-    var UI_TICK_MS = 1000;             // 每秒更新 spinner 時間
+    var UI_TICK_MS = 1000;             // 每秒更新計時器
 
-    // UI tick：每秒更新經過時間
+    // UI tick：只更新 badge 數字，不重 render（避免重複 bind 事件）
     var uiTimer = setInterval(function () {
       if (Date.now() - processingStartedAt < MAX_POLL_MS) {
-        showProcessingPlaceholder();
+        updateProcessingTimer();
       } else {
         clearInterval(uiTimer);
       }

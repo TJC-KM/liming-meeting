@@ -582,12 +582,14 @@ async function handleProcess(date, type) {
     .catch(e => console.warn('[process] worker 失敗', e.message));
 
   // 立刻跳到 meeting.html 等待模式
+  // audioFileId 讓 meeting 頁能在 Notion 寫入前就提供播放/下載/心得功能
   const qp = new URLSearchParams({
     date: date,
     type: type,
     topic: topic || '',
     speaker: speaker || '',
     sizeMB: sizeMB ? String(sizeMB) : '',
+    audioFileId: file ? file.id : '',
     processing: '1',
   });
   if (state.theme !== 'adult') qp.set('theme', state.theme);
