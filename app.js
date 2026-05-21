@@ -338,6 +338,28 @@ function getMonthCounts() {
 }
 
 function render() {
+  // 保留搜尋框的焦點與游標位置（innerHTML 重畫會把 DOM 換掉，焦點會掉）
+  var activeId = document.activeElement && document.activeElement.id;
+  var cursorPos = null;
+  if (activeId === 'si' && document.activeElement.selectionStart != null) {
+    cursorPos = document.activeElement.selectionStart;
+  }
+
+  _doRender();
+
+  // render 完之後把焦點還回去
+  if (activeId === 'si') {
+    var newSi = document.getElementById('si');
+    if (newSi) {
+      newSi.focus();
+      if (cursorPos != null) {
+        try { newSi.setSelectionRange(cursorPos, cursorPos); } catch (e) {}
+      }
+    }
+  }
+}
+
+function _doRender() {
   if (state.loading) {
     document.getElementById('root').innerHTML = '<div class="loading">載入中...</div>';
     return;
