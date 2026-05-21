@@ -135,9 +135,13 @@ a{color:inherit;text-decoration:none}
 }
 .info-title-empty{font-weight:400;color:var(--tx2)}
 .file-size{font-size:11px;color:var(--tx3)}
+/* === Badge 三組配色 === */
+/* Group A: 待處理（錄音 + 預查）— 橘色（提醒需動作）*/
 .badge-pending{background:var(--warn-bg);color:var(--warn-tx);border:1px solid var(--warn)}
-.badge-future{background:var(--accent-bg);color:var(--accent-tx)}
-.badge-empty{background:var(--bg3);color:var(--tx3)}
+/* Group B: 無聚會 / 預定 — 灰色（無內容）*/
+.badge-future,.badge-empty{background:var(--bg3);color:var(--tx3);border:1px solid var(--bd)}
+/* Group C: 已記錄（草稿 / 已發布 / 預告）— 藍色（已有內容可看）*/
+.badge-pub,.badge-draft,.badge-up{background:var(--accent-bg);color:var(--accent-tx);border:1px solid var(--accent)}
 .date-col{min-width:42px;text-align:center;flex-shrink:0}
 .date-day{font-size:20px;font-weight:700;line-height:1.1}
 .date-mon{font-size:11px;color:var(--tx2)}
@@ -146,9 +150,7 @@ a{color:inherit;text-decoration:none}
 .info-meta{font-size:12px;color:var(--tx2);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .type-tag{font-size:11px;padding:2px 8px;border-radius:var(--radius);background:var(--bg3);color:var(--tx2)}
 .badge{font-size:10px;padding:2px 8px;border-radius:var(--radius);font-weight:500}
-.badge-pub{background:var(--accent-bg);color:var(--accent-tx)}
-.badge-up{background:var(--warn-bg);color:var(--warn-tx)}
-.badge-draft{background:var(--draft-bg);color:var(--draft-tx)}
+/* badge 配色定義在「Badge 三組配色」區塊（上方）*/
 .has-sum{color:var(--ok-tx);font-size:11px}
 .arrow{color:var(--tx3);font-size:18px;flex-shrink:0}
 
