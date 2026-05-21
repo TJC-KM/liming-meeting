@@ -1,6 +1,7 @@
 // 詳細頁邏輯
 (function () {
   var theme = ThemeManager.get();
+  var device = DeviceManager.get();
   var params = new URLSearchParams(location.search);
   var id = params.get('id');
   var qDate = params.get('date');
@@ -15,9 +16,13 @@
 
   ColorThemeManager.apply(ColorThemeManager.get());
 
-  document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(theme);
+  document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(theme, null, device);
   ThemeManager.apply(theme, 'app');
-  bindThemeSwitcher('app', function (t) { theme = t; });
+  DeviceManager.apply(device, 'app');
+  bindThemeSwitcher('app', function (change) {
+    if (change.size) theme = change.size;
+    if (change.device) device = change.device;
+  });
 
   if (id) {
     loadById(id);

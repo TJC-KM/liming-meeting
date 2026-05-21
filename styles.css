@@ -30,13 +30,14 @@ a{color:inherit;text-decoration:none}
 .header h1 svg{width:24px;height:24px;stroke:var(--accent)}
 .back-link{font-size:13px;color:var(--tx2);padding:6px 10px;border-radius:var(--radius);border:1px solid var(--bd);background:var(--bg);cursor:pointer}
 .back-link:hover{background:var(--bg3)}
-.theme-switcher{display:flex;gap:4px;flex-wrap:wrap}
+.theme-switcher{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.theme-group{display:inline-flex;gap:4px;align-items:center}
+.theme-group + .theme-group{padding-left:8px;border-left:1px solid var(--bd)}
 .theme-btn{padding:6px 12px;border-radius:var(--radius);border:1px solid var(--bd);background:var(--bg);font-size:12px;color:var(--tx2);cursor:pointer;font-family:var(--font);transition:all .15s}
 .theme-btn.active{background:var(--accent-bg);color:var(--accent-tx);border-color:var(--accent)}
 .theme-btn:hover:not(.active){background:var(--bg3)}
 .theme-btn-icon{padding:6px 8px;display:inline-flex;align-items:center;justify-content:center}
 .theme-btn-icon svg{width:14px;height:14px;display:block}
-.theme-divider{width:1px;background:var(--bd);margin:0 2px}
 
 /* === SEARCH === */
 .search-wrap{position:relative;margin-bottom:12px}
@@ -49,6 +50,9 @@ a{color:inherit;text-decoration:none}
 .chip{padding:5px 12px;border-radius:20px;border:1px solid var(--bd);background:var(--bg);font-size:12px;color:var(--tx2);cursor:pointer;font-family:var(--font);transition:all .12s;white-space:nowrap}
 .chip.active{background:var(--accent-bg);color:var(--accent-tx);border-color:var(--accent)}
 .chip:hover:not(.active){background:var(--bg3)}
+/* hide-future chip 是「持續性篩選」：用灰色而非藍色，跟「剛點的篩選」區分 */
+.chip-toggle.active{background:var(--draft-bg);color:var(--draft-tx);border-color:var(--bd2)}
+.chip-toggle.active:hover{background:var(--bg3)}
 
 /* === YEAR / MONTH NAV === */
 .nav-row{display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
@@ -176,22 +180,6 @@ a{color:inherit;text-decoration:none}
 .senior .theme-btn{font-size:14px;padding:8px 14px}
 .senior .back-link{font-size:16px;padding:8px 14px}
 
-/* Kids */
-.kids .row{padding:12px 14px;border-radius:var(--radius-lg);border:1.5px solid var(--bd);position:relative;overflow:hidden}
-.kids .row::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px}
-.kids .row:nth-child(5n+1)::before{background:#a78bfa}
-.kids .row:nth-child(5n+2)::before{background:#34d399}
-.kids .row:nth-child(5n+3)::before{background:#fbbf24}
-.kids .row:nth-child(5n+4)::before{background:#f87171}
-.kids .row:nth-child(5n+5)::before{background:#60a5fa}
-.kids .row.future::before{background:var(--warn) !important}
-.kids .date-col{background:var(--bg3);border-radius:var(--radius);padding:6px 8px;min-width:48px}
-.kids .date-day{font-size:22px;color:var(--accent)}
-.kids .info-title{font-size:15px}
-.kids .chip{border-radius:20px;font-size:13px;padding:6px 14px}
-.kids .badge{border-radius:12px}
-.kids .nav-btn{border-radius:16px}
-
 /* === PAGER === */
 .pager{display:flex;align-items:center;justify-content:center;gap:4px;margin-top:16px;padding-top:16px;border-top:1px solid var(--bd)}
 .pg{min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius);border:1px solid var(--bd);background:var(--bg);font-size:13px;color:var(--tx2);cursor:pointer;font-family:var(--font);transition:all .12s}
@@ -270,12 +258,88 @@ a{color:inherit;text-decoration:none}
 .senior .verse-english{font-size:16px}
 .senior .action-btn{font-size:16px;padding:14px 18px}
 
-/* Detail page kids */
-.kids .meeting-header{border-radius:var(--radius-lg);border-width:2px;border-color:#a78bfa}
-.kids .meeting-title{color:var(--accent)}
-.kids .section{border-radius:var(--radius-lg);border-width:1.5px}
-.kids .verse-card{border-radius:var(--radius);border-width:1.5px}
-.kids .action-btn{border-radius:20px}
+/* =================================================================
+   裝置主題：手機版（預設）/ 電腦版
+   ================================================================= */
+
+/* 手機版（預設）：sidebar 是「透明」的容器，children 直接 flow */
+.sidebar{display:contents}
+
+/* === 電腦版 === */
+.desktop.container{max-width:1200px;padding:24px}
+.desktop .header{margin-bottom:24px}
+.desktop .header h1{font-size:26px}
+
+/* index 頁：sidebar + 3 欄 grid */
+.desktop #root{
+  display:grid;
+  grid-template-columns:260px 1fr;
+  grid-template-areas:
+    "search   search"
+    "stats    stats"
+    "sidebar  list";
+  column-gap:24px;
+  row-gap:14px;
+}
+.desktop #root > .search-wrap{grid-area:search;margin-bottom:0}
+.desktop #root > .stats{grid-area:stats;margin-bottom:0}
+.desktop #root > .sidebar{
+  grid-area:sidebar;
+  display:flex;
+  flex-direction:column;
+  gap:18px;
+  position:sticky;
+  top:16px;
+  align-self:start;
+  max-height:calc(100vh - 32px);
+  overflow-y:auto;
+}
+.desktop #root > .list{
+  grid-area:list;
+  display:grid;
+  grid-template-columns:repeat(3, 1fr);
+  gap:12px;
+  align-content:start;
+}
+.desktop #root > .empty{grid-column:1/-1}
+
+/* desktop sidebar：filter / 年月 nav 縱向堆疊 */
+.desktop .sidebar .filters,
+.desktop .sidebar .nav-row{
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  margin:0;
+  padding:12px;
+  background:var(--bg);
+  border:1px solid var(--bd);
+  border-radius:var(--radius);
+}
+.desktop .sidebar .nav-label{
+  font-size:11px;
+  color:var(--tx3);
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  margin:0 0 6px;
+  padding-bottom:6px;
+  border-bottom:1px solid var(--bd);
+}
+.desktop .sidebar .chip,
+.desktop .sidebar .nav-btn{
+  width:100%;
+  justify-content:flex-start;
+  text-align:left;
+  border-radius:var(--radius);
+  padding:7px 10px;
+  font-size:13px;
+}
+
+/* meeting 詳細頁：保持單欄置中、稍微寬一點（800px）*/
+.desktop.container:has(.meeting-header){max-width:820px}
+
+/* 電腦版 + 大字版：grid 縮成 2 欄（卡片變大裝不下 3 欄）*/
+.desktop.senior #root{grid-template-columns:280px 1fr}
+.desktop.senior #root > .list{grid-template-columns:repeat(2, 1fr)}
 
 @media(max-width:480px){
   .container{padding:12px}

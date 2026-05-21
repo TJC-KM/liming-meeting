@@ -148,18 +148,45 @@ const DriveCache = {
 };
 
 // === 共用工具 ===
-// 字級主題：成人 / 長輩 / 兒童（影響字級、排版）
+// 字級主題：正常版 (adult) / 大字版 (senior)
+// 舊的 kids 值自動遷移成 adult
 const ThemeManager = {
   KEY: 'church-meeting-theme',
   get() {
     const url = new URLSearchParams(location.search).get('theme');
-    if (url && ['adult', 'senior', 'kids'].includes(url)) return url;
-    return localStorage.getItem(this.KEY) || 'adult';
+    if (url && ['adult', 'senior'].includes(url)) return url;
+    let v = localStorage.getItem(this.KEY);
+    if (v === 'kids') { v = 'adult'; localStorage.setItem(this.KEY, v); }  // 遷移
+    return v || 'adult';
   },
   set(t) { localStorage.setItem(this.KEY, t); },
   apply(t, containerId) {
+    // 字級類別：adult 不加 class（預設），senior 加 .senior
     const el = document.getElementById(containerId);
-    if (el) el.className = 'container ' + (t === 'adult' ? '' : t);
+    if (!el) return;
+    el.classList.remove('senior');
+    if (t === 'senior') el.classList.add('senior');
+  },
+};
+
+// 裝置主題：手機 (mobile) / 電腦 (desktop)
+// 首次進入：螢幕寬 >= 900 → desktop，否則 mobile
+const DeviceManager = {
+  KEY: 'church-meeting-device',
+  get() {
+    const url = new URLSearchParams(location.search).get('device');
+    if (url && ['mobile', 'desktop'].includes(url)) return url;
+    const stored = localStorage.getItem(this.KEY);
+    if (stored && ['mobile', 'desktop'].includes(stored)) return stored;
+    return (typeof window !== 'undefined' && window.innerWidth >= 900) ? 'desktop' : 'mobile';
+  },
+  set(d) { localStorage.setItem(this.KEY, d); },
+  apply(d, containerId) {
+    // 裝置類別：mobile 不加 class（預設），desktop 加 .desktop
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    el.classList.remove('desktop');
+    if (d === 'desktop') el.classList.add('desktop');
   },
 };
 
@@ -178,16 +205,23 @@ const ColorThemeManager = {
 const SUN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
 const MOON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
 
-function renderThemeSwitcher(currentSize, currentColor) {
+function renderThemeSwitcher(currentSize, currentColor, currentDevice) {
   currentColor = currentColor || ColorThemeManager.get();
+  currentDevice = currentDevice || DeviceManager.get();
   return `
     <div class="theme-switcher" id="themeSwitcher">
-      <button class="theme-btn ${currentSize === 'adult' ? 'active' : ''}" data-t="adult">成人版</button>
-      <button class="theme-btn ${currentSize === 'senior' ? 'active' : ''}" data-t="senior">長輩版</button>
-      <button class="theme-btn ${currentSize === 'kids' ? 'active' : ''}" data-t="kids">兒童版</button>
-      <span class="theme-divider"></span>
-      <button class="theme-btn theme-btn-icon ${currentColor === 'light' ? 'active' : ''}" data-c="light" title="淺色">${SUN_SVG}</button>
-      <button class="theme-btn theme-btn-icon ${currentColor === 'dark' ? 'active' : ''}" data-c="dark" title="深色">${MOON_SVG}</button>
+      <div class="theme-group">
+        <button class="theme-btn ${currentSize === 'adult' ? 'active' : ''}" data-t="adult">正常版</button>
+        <button class="theme-btn ${currentSize === 'senior' ? 'active' : ''}" data-t="senior">大字版</button>
+      </div>
+      <div class="theme-group">
+        <button class="theme-btn ${currentDevice === 'mobile' ? 'active' : ''}" data-d="mobile">手機版</button>
+        <button class="theme-btn ${currentDevice === 'desktop' ? 'active' : ''}" data-d="desktop">電腦版</button>
+      </div>
+      <div class="theme-group">
+        <button class="theme-btn theme-btn-icon ${currentColor === 'light' ? 'active' : ''}" data-c="light" title="淺色">${SUN_SVG}</button>
+        <button class="theme-btn theme-btn-icon ${currentColor === 'dark' ? 'active' : ''}" data-c="dark" title="深色">${MOON_SVG}</button>
+      </div>
     </div>
   `;
 }
@@ -206,7 +240,15 @@ function bindThemeSwitcher(containerId, onChange) {
       const t = b.dataset.t;
       ThemeManager.set(t);
       ThemeManager.apply(t, containerId);
-      if (onChange) onChange(t);
+      if (onChange) onChange({ size: t });
+    } else if (b.dataset.d) {
+      // 裝置主題
+      sw.querySelectorAll('[data-d]').forEach(d => d.classList.remove('active'));
+      b.classList.add('active');
+      const d = b.dataset.d;
+      DeviceManager.set(d);
+      DeviceManager.apply(d, containerId);
+      if (onChange) onChange({ device: d });
     } else if (b.dataset.c) {
       // 配色主題
       sw.querySelectorAll('[data-c]').forEach(c => c.classList.remove('active'));

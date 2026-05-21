@@ -30,8 +30,9 @@ var state = {
   sq: '',
   sy: null,
   sm: null,
-  hideFuture: false,
+  hideFuture: true,  // 預設勾選：客戶通常看的是已經發生的聚會
   theme: ThemeManager.get(),
+  device: DeviceManager.get(),
   loading: true,
   loadingDrive: false,
   driveError: null,
@@ -49,9 +50,14 @@ function init() {
   // 套用配色主題（必須在 render 前）
   ColorThemeManager.apply(ColorThemeManager.get());
 
-  document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(state.theme);
+  document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(state.theme, null, state.device);
   ThemeManager.apply(state.theme, 'app');
-  bindThemeSwitcher('app', function (t) { state.theme = t; render(); });
+  DeviceManager.apply(state.device, 'app');
+  bindThemeSwitcher('app', function (change) {
+    if (change.size) state.theme = change.size;
+    if (change.device) state.device = change.device;
+    render();
+  });
 
   loadInitial();
 }
@@ -349,11 +355,13 @@ function render() {
   h += '<div class="search-wrap"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
   h += '<input class="search" type="text" placeholder="搜尋主題、講員..." value="' + escapeAttr(state.sq) + '" id="si"></div>';
 
+  // sidebar：篩選 / 年份 / 月份（電腦版會被 CSS Grid 推到左側 sticky）
+  h += '<aside class="sidebar">';
   h += '<div class="filters" id="ft"><button class="chip ' + (state.filter === 'all' ? 'active' : '') + '" data-f="all">全部</button>';
   WEEKDAY_FILTERS.forEach(function (w) {
     h += '<button class="chip ' + (state.filter === String(w.dow) ? 'active' : '') + '" data-f="' + w.dow + '">' + w.label + '</button>';
   });
-  h += '<button class="chip ' + (state.hideFuture ? 'active' : '') + '" id="hf-chip">' + (state.hideFuture ? '✓ ' : '') + '隱藏未到</button>';
+  h += '<button class="chip chip-toggle ' + (state.hideFuture ? 'active' : '') + '" id="hf-chip">' + (state.hideFuture ? '✓ ' : '') + '隱藏未到</button>';
   h += '</div>';
 
   if (years.length > 0) {
@@ -371,6 +379,7 @@ function render() {
     h += '</button>';
   }
   h += '</div>';
+  h += '</aside>';
 
   h += '<div class="stats">';
   if (state.sm !== null) {
