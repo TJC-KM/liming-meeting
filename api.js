@@ -147,6 +147,50 @@ const DriveCache = {
   },
 };
 
+// === 處理中狀態的 localStorage 持久化 ===
+// 解決：頁面 reload / 返回後，「處理中」狀態消失導致使用者誤以為沒在跑、重複點擊
+// key 格式：
+//   - 錄音：「YYYY-MM-DD_類型」（如 "2026-05-09_週日聚會"）
+//   - 預查：「study_<fileId>」
+// value：時間戳；TTL 10 分鐘（超時視為失敗，恢復可點）
+const ProcessingStore = {
+  KEY: 'church-meeting-processing',
+  TTL_MS: 10 * 60 * 1000,
+
+  _read() {
+    try { return JSON.parse(localStorage.getItem(this.KEY) || '{}'); }
+    catch (e) { return {}; }
+  },
+  _write(obj) {
+    try { localStorage.setItem(this.KEY, JSON.stringify(obj)); } catch (e) {}
+  },
+
+  set(key) {
+    const obj = this._read();
+    obj[key] = Date.now();
+    this._write(obj);
+  },
+  delete(key) {
+    const obj = this._read();
+    delete obj[key];
+    this._write(obj);
+  },
+  // 取出未過期的 keys，順手清掉過期的
+  getActive() {
+    const obj = this._read();
+    const now = Date.now();
+    const active = {}, cleaned = {};
+    Object.keys(obj).forEach(key => {
+      if (now - obj[key] < this.TTL_MS) {
+        active[key] = obj[key];
+        cleaned[key] = obj[key];
+      }
+    });
+    this._write(cleaned);
+    return active;
+  },
+};
+
 // === 共用工具 ===
 // 字級主題：正常版 (adult) / 大字版 (senior)
 // 舊的 kids 值自動遷移成 adult

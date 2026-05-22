@@ -97,6 +97,13 @@ function init() {
     render();
   });
 
+  // 從 localStorage 還原「處理中」狀態（跨 reload / 返回保留）
+  restoreProcessing();
+  if (Object.keys(state.processing).length > 0) {
+    startProcessingTicker();
+    startCompletionPolling();
+  }
+
   loadInitial();
 }
 
@@ -930,22 +937,27 @@ function bindEvents() {
     else if (dir === 'today') gotoWeek(getWeekStart(new Date()));
   });
 
-  // 綁在 #root 上而非 #ml，這樣 list / 月曆 / 週曆 三種容器都能接收點擊事件
-  const root = document.getElementById('root');
-  if (root) root.addEventListener('click', function (e) {
-    const b = e.target.closest('[data-action]');
-    if (!b) return;
-    const action = b.dataset.action;
-    if (action === 'open') {
-      const id = b.dataset.id;
-      if (id) location.href = 'meeting.html?id=' + encodeURIComponent(id) + (state.theme !== 'adult' ? '&theme=' + state.theme : '');
-    } else if (action === 'process') {
-      handleProcess(b.dataset.date, b.dataset.type);
-    } else if (action === 'process-study') {
-      handleProcessStudy(b.dataset.fileid);
-    }
-  });
+  // #root 是 HTML 寫死的 ID（不會被 innerHTML 重畫），所以 listener 只能綁一次
+  // 否則每 render 一次就累積一個 listener，點一次按鈕就會觸發 N 次！
+  if (!_rootClickBound) {
+    _rootClickBound = true;
+    const root = document.getElementById('root');
+    if (root) root.addEventListener('click', function (e) {
+      const b = e.target.closest('[data-action]');
+      if (!b) return;
+      const action = b.dataset.action;
+      if (action === 'open') {
+        const id = b.dataset.id;
+        if (id) location.href = 'meeting.html?id=' + encodeURIComponent(id) + (state.theme !== 'adult' ? '&theme=' + state.theme : '');
+      } else if (action === 'process') {
+        handleProcess(b.dataset.date, b.dataset.type);
+      } else if (action === 'process-study') {
+        handleProcessStudy(b.dataset.fileid);
+      }
+    });
+  }
 }
+var _rootClickBound = false;
 
 async function handleProcess(date, type) {
   const key = `${date}_${type}`;
@@ -955,6 +967,11 @@ async function handleProcess(date, type) {
   const topic = file ? file.topic : '';
   const speaker = file ? file.speaker : '';
   const sizeMB = file ? file.sizeMB : null;
+
+  // 設 lock — in-memory + localStorage 持久化，避免重複觸發
+  markProcessing(key);
+  startProcessingTicker();
+  startCompletionPolling();
 
   // 發 Worker 請求（不 await，keepalive 確保離開頁面仍會送出）
   gasApi.process(date, type)
@@ -982,8 +999,9 @@ async function handleProcessStudy(fileId) {
   const key = `study_${fileId}`;
   if (state.processing[key]) return;
 
-  state.processing[key] = Date.now();
+  markProcessing(key);
   startProcessingTicker();
+  startCompletionPolling();
   render();
 
   // Fire 處理（不 await）
@@ -1023,46 +1041,83 @@ function stopProcessingTickerIfDone() {
   }
 }
 
-async function pollForCompletion(date, type, processingKey) {
-  const MAX_POLL_MS = 12 * 60 * 1000;  // 12 分鐘上限（大檔可能要久）
-  const POLL_INTERVAL_MS = 15000;
-  const startedAt = Date.now();
+// === 處理中狀態管理（in-memory + localStorage 同步）===
 
-  while (Date.now() - startedAt < MAX_POLL_MS) {
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+function markProcessing(key) {
+  ProcessingStore.set(key);
+  state.processing[key] = Date.now();
+}
+function clearProcessing(key) {
+  ProcessingStore.delete(key);
+  delete state.processing[key];
+}
 
+// 從 localStorage 還原處理中清單（init 時呼叫，跨 reload 保留狀態）
+function restoreProcessing() {
+  Object.assign(state.processing, ProcessingStore.getActive());
+}
+
+// === Index 端輪詢 Notion，偵測「處理完成」===
+// 每 15 秒呼叫 listMeetings；發現某個 processing key 對應的紀錄已存在 → 清 lock + render
+// 只在 state.processing 有東西時運作；空了就自動停止
+var _completionPoll = null;
+function startCompletionPolling() {
+  if (_completionPoll) return;
+  if (Object.keys(state.processing).length === 0) return;
+
+  _completionPoll = setInterval(async function () {
+    if (Object.keys(state.processing).length === 0) {
+      clearInterval(_completionPoll);
+      _completionPoll = null;
+      return;
+    }
     try {
-      const noResult = await api.listMeetings();
-      const found = (noResult.meetings || []).find(m => {
-        const d = m.date ? m.date.substring(0, 10) : '';
-        return d === date && m.type === type;
+      const result = await api.listMeetings();
+      const meetings = result.meetings || [];
+      let changed = false;
+
+      Object.keys(state.processing).forEach(function (key) {
+        let match;
+        if (key.indexOf('study_') === 0) {
+          // study_<fileId>
+          const fileId = key.substring(6);
+          match = meetings.find(m => m.studyUrl && m.studyUrl.indexOf(fileId) >= 0);
+        } else {
+          // YYYY-MM-DD_<type>
+          const idx = key.indexOf('_');
+          const date = key.substring(0, idx);
+          const type = key.substring(idx + 1);
+          match = meetings.find(function (m) {
+            const d = m.date ? m.date.substring(0, 10) : '';
+            return d === date && m.type === type;
+          });
+        }
+        if (match) {
+          console.log(`[poll] 偵測完成：${match.topic}`);
+          clearProcessing(key);
+          changed = true;
+        }
       });
 
-      if (found) {
-        console.log(`[poll] 偵測到完成：${found.topic}`);
-        state.notionMeetings = (noResult.meetings || []).map(function (m) {
+      if (changed) {
+        state.notionMeetings = meetings.map(function (m) {
           const d = formatDate(m.date);
           return Object.assign({}, m, {
             year: d.y, month: d.m, day: d.d, dow: d.dow,
             dateKey: m.date ? m.date.substring(0, 10) : '',
           });
         });
-        delete state.processing[processingKey];
-        stopProcessingTickerIfDone();
-        DriveCache.invalidate(state.sy, state.sm + 1);
-        await loadDriveForMonth(state.sy, state.sm);
-        alert(`完成！「${found.topic}」已建立 Notion 草稿，請至 Notion 校稿。`);
-        return;
+        DriveCache.invalidateAll();
+        // 同步重新載入當前視圖的 Drive 資料（剛處理完的檔案應該不在 unprocessed 清單裡了）
+        if (state.view === 'week' && state.weekDate) loadDriveForWeek(state.weekDate);
+        else if (state.sm !== null) loadDriveForMonth(state.sy, state.sm);
+        else loadDriveForYear(state.sy);
+        render();
       }
     } catch (e) {
       console.warn(`[poll] 輪詢失敗（會重試）：${e.message}`);
     }
-  }
-
-  delete state.processing[processingKey];
-  stopProcessingTickerIfDone();
-  render();
-  alert(`處理超過 12 分鐘仍未完成，可能 Cloudflare 處理超時或 Gemini 持續忙線。\n可到 Cloudflare Dashboard 看 Worker logs，或稍後重試。`);
+  }, 15000);
 }
 
 function pad2(n) { return String(n).padStart(2, '0'); }
