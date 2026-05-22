@@ -930,8 +930,9 @@ function bindEvents() {
     else if (dir === 'today') gotoWeek(getWeekStart(new Date()));
   });
 
-  const ml = document.getElementById('ml');
-  if (ml) ml.addEventListener('click', function (e) {
+  // 綁在 #root 上而非 #ml，這樣 list / 月曆 / 週曆 三種容器都能接收點擊事件
+  const root = document.getElementById('root');
+  if (root) root.addEventListener('click', function (e) {
     const b = e.target.closest('[data-action]');
     if (!b) return;
     const action = b.dataset.action;
