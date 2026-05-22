@@ -28,6 +28,8 @@ var state = {
   sy: null,
   sm: null,
   showFuture: false,  // 預設不顯示未來日子；勾選「未來」chip 才顯示
+  view: 'month',      // 'month' | 'week'（電腦版才有 week 選項）
+  weekDate: null,     // 週視圖：當週週日的 Date 物件，由 getWeekStart 設定
   theme: ThemeManager.get(),
   device: DeviceManager.get(),
   loading: true,
@@ -41,6 +43,45 @@ function dowLabel(year, month, day) {
   const d = new Date(year, month - 1, day).getDay();
   if (d === 6) return '安息日';
   return '週' + DOW_NAMES[d];
+}
+
+// 給定一個 Date，回傳那一週的「週日」Date（時間歸零）
+function getWeekStart(date) {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+}
+
+// 對 sunday 加 N 天回傳新 Date
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
+// 給 sunday Date，產生一週 7 天的 day 物件（items 為空）
+function buildDaysForWeek(sundayDate) {
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const dt = addDays(sundayDate, i);
+    days.push({
+      year: dt.getFullYear(),
+      month: dt.getMonth() + 1,
+      day: dt.getDate(),
+      dow: dt.getDay(),
+      items: [],
+    });
+  }
+  return days;
+}
+
+// 格式化週標籤：「5/17 ~ 5/23」或跨月「5/30 ~ 6/5」
+function formatWeekRange(sundayDate) {
+  const saturday = addDays(sundayDate, 6);
+  const m1 = sundayDate.getMonth() + 1, d1 = sundayDate.getDate();
+  const m2 = saturday.getMonth() + 1, d2 = saturday.getDate();
+  if (m1 === m2) return `${m1}/${d1} ~ ${d2}`;
+  return `${m1}/${d1} ~ ${m2}/${d2}`;
 }
 
 function init() {
@@ -137,6 +178,43 @@ async function loadStudyDocs() {
   }
 }
 
+// 載入一週可能跨到的月份的 Drive 檔案（1~2 個月）
+async function loadDriveForWeek(sundayDate) {
+  if (!gasApi.enabled()) return;
+
+  const startY = sundayDate.getFullYear();
+  const startM = sundayDate.getMonth();
+  const endDate = addDays(sundayDate, 6);
+  const endY = endDate.getFullYear();
+  const endM = endDate.getMonth();
+
+  const months = [{ y: startY, m: startM }];
+  if (startY !== endY || startM !== endM) months.push({ y: endY, m: endM });
+
+  state.loadingDrive = true;
+  state.driveError = null;
+  state.driveFiles = [];
+  render();
+
+  try {
+    const results = await Promise.all(months.map(async ({ y, m }) => {
+      const cached = DriveCache.get(y, m + 1);
+      if (cached) return cached;
+      const result = await gasApi.listUnprocessed(y, m + 1);
+      const files = result.files || [];
+      DriveCache.set(y, m + 1, files);
+      return files;
+    }));
+    state.driveFiles = results.flat().filter(f => f.parseable);
+    state.loadingDrive = false;
+    render();
+  } catch (err) {
+    state.driveError = err.message;
+    state.loadingDrive = false;
+    render();
+  }
+}
+
 async function loadDriveForYear(year) {
   if (!gasApi.enabled()) return;
 
@@ -199,6 +277,28 @@ function selectYear(year) {
   state.driveFiles = [];
   render();
   loadDriveForYear(year);
+}
+
+function selectView(v) {
+  if (v !== 'month' && v !== 'week') return;
+  if (state.view === v) return;
+  state.view = v;
+  if (v === 'week') {
+    if (!state.weekDate) state.weekDate = getWeekStart(new Date());
+    loadDriveForWeek(state.weekDate);
+  } else {
+    // 切回月：用當前 sy/sm 重載
+    if (state.sm !== null) loadDriveForMonth(state.sy, state.sm);
+    else loadDriveForYear(state.sy);
+  }
+  render();
+}
+
+function gotoWeek(sundayDate) {
+  state.weekDate = sundayDate;
+  state.sy = sundayDate.getFullYear();   // 同步年份按鈕高亮
+  render();
+  loadDriveForWeek(sundayDate);
 }
 
 // === 日曆生成 ===
@@ -387,13 +487,35 @@ function _doRender() {
     h += '</div>';
   }
 
-  h += '<div class="nav-row" id="mn"><span class="nav-label">月份</span><button class="nav-btn ' + (state.sm === null ? 'active' : '') + '" data-m="x">全年</button>';
-  for (let i = 11; i >= 0; i--) {
-    h += '<button class="nav-btn ' + (state.sm === i ? 'active' : '') + '" data-m="' + i + '">' + (i + 1) + '月';
-    if (mc[i] > 0) h += '<span class="cnt">' + mc[i] + '</span>';
-    h += '</button>';
+  // 月/週視圖：week 模式只在電腦版啟用
+  const inWeekView = state.device === 'desktop' && state.view === 'week';
+
+  if (inWeekView) {
+    // 週導覽：← 5/17 ~ 5/23 →
+    h += '<div class="nav-row" id="wn"><span class="nav-label">週次</span>';
+    h += '<button class="nav-btn" data-wk="prev">← 上週</button>';
+    h += '<button class="nav-btn nav-btn-static">' + formatWeekRange(state.weekDate) + '</button>';
+    h += '<button class="nav-btn" data-wk="next">下週 →</button>';
+    h += '<button class="nav-btn" data-wk="today">回到本週</button>';
+    h += '</div>';
+  } else {
+    h += '<div class="nav-row" id="mn"><span class="nav-label">月份</span><button class="nav-btn ' + (state.sm === null ? 'active' : '') + '" data-m="x">全年</button>';
+    for (let i = 11; i >= 0; i--) {
+      h += '<button class="nav-btn ' + (state.sm === i ? 'active' : '') + '" data-m="' + i + '">' + (i + 1) + '月';
+      if (mc[i] > 0) h += '<span class="cnt">' + mc[i] + '</span>';
+      h += '</button>';
+    }
+    h += '</div>';
   }
-  h += '</div>';
+
+  // 視圖切換（只在電腦版顯示，因為手機沒有月曆/週曆）
+  if (state.device === 'desktop') {
+    h += '<div class="nav-row" id="vn"><span class="nav-label">視圖</span>';
+    h += '<button class="nav-btn ' + (state.view === 'month' ? 'active' : '') + '" data-v="month">月</button>';
+    h += '<button class="nav-btn ' + (state.view === 'week' ? 'active' : '') + '" data-v="week">週</button>';
+    h += '</div>';
+  }
+
   h += '</aside>';
 
   h += '<div class="stats">';
@@ -414,9 +536,12 @@ function _doRender() {
   }
   h += '</div>';
 
-  // 電腦版 + 單月：用月曆網格；其他情況（手機、全年）用 list
-  const useCalendar = state.device === 'desktop' && state.sm !== null;
-  if (useCalendar) {
+  // 電腦版視圖選擇：week → 4+3 週曆；month → 月曆網格；其他 → list
+  const useWeek = state.device === 'desktop' && state.view === 'week';
+  const useCalendar = state.device === 'desktop' && state.view === 'month' && state.sm !== null;
+  if (useWeek) {
+    h += renderWeekView();
+  } else if (useCalendar) {
     h += renderCalendarView();
   } else if (days.length === 0) {
     h += '<div class="empty">找不到符合條件的日子</div>';
@@ -545,6 +670,108 @@ function renderCalendarEvent(item, d) {
 
   const topic = item.topic || (item.driveFile && item.driveFile.topic) || (item.studyDoc && item.studyDoc.topic) || '(未命名)';
   return `<div class="${cls}" ${action} title="${escapeAttr(topic)}">${escapeHtml(topic)}</div>`;
+}
+
+// === 週曆視圖（電腦版 + 週模式）===
+// 排版：上排 4 天（日 一 二 三），下排 3 天（四 五 六）—— 讓安息日格子大很多
+function renderWeekView() {
+  if (!state.weekDate) state.weekDate = getWeekStart(new Date());
+  const days = buildDaysForWeek(state.weekDate);
+  attachEntries(days);
+
+  // 套用搜尋：過濾每個 day 的 items
+  if (state.sq) {
+    const q = state.sq.toLowerCase();
+    days.forEach(d => {
+      d.items = d.items.filter(item => {
+        const topic = (item.topic || '').toLowerCase();
+        const speaker = (item.speaker || '').toLowerCase();
+        return topic.indexOf(q) >= 0 || speaker.indexOf(q) >= 0;
+      });
+    });
+  }
+
+  // showFuture 控制未來日子的 events 是否清空
+  if (!state.showFuture) {
+    const now = new Date();
+    days.forEach(d => {
+      if (new Date(d.year, d.month - 1, d.day) > now) d.items = [];
+    });
+  }
+
+  const top = days.slice(0, 4);     // 日 一 二 三
+  const bottom = days.slice(4, 7);  // 四 五 六
+
+  let h = '<div class="week-view">';
+  h += '<div class="week-row week-row-top">';
+  top.forEach(d => h += renderWeekCell(d));
+  h += '</div>';
+  h += '<div class="week-row week-row-bottom">';
+  bottom.forEach(d => h += renderWeekCell(d));
+  h += '</div>';
+  h += '</div>';
+  return h;
+}
+
+function renderWeekCell(d) {
+  const today = new Date();
+  const isToday = today.getFullYear() === d.year
+               && today.getMonth() === d.month - 1
+               && today.getDate() === d.day;
+  const isSat = d.dow === 6;
+  const isFuture = new Date(d.year, d.month - 1, d.day) > today;
+
+  let cls = 'week-cell';
+  if (isToday) cls += ' week-cell-today';
+  if (isSat) cls += ' week-cell-sat';
+  if (isFuture) cls += ' week-cell-future';
+  if (d.items.length === 0) cls += ' week-cell-empty';
+
+  const dowName = ['日', '一', '二', '三', '四', '五', '六'][d.dow];
+  const label = isSat ? '安息日' : '週' + dowName;
+
+  let h = '<div class="' + cls + '">';
+  h += '<div class="week-cell-head">';
+  h += '<div class="week-cell-date">' + d.month + '/' + d.day + '</div>';
+  h += '<div class="week-cell-dow">' + label + '</div>';
+  h += '</div>';
+  if (d.items.length > 0) {
+    h += '<div class="week-cell-events">';
+    d.items.forEach(item => h += renderWeekEvent(item, d));
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function renderWeekEvent(item, d) {
+  const st = item._state;
+  const procKey = `${d.year}-${pad2(d.month)}-${pad2(d.day)}_${item.type}`;
+  const isProcessing = !!state.processing[procKey];
+
+  let action = '';
+  let cls = 'week-event week-event-' + st;
+  if (isProcessing) cls += ' week-event-processing';
+
+  if (st === 'filled' && item.id) {
+    action = `data-action="open" data-id="${escapeAttr(item.id)}"`;
+    cls += ' week-event-clickable';
+  } else if (st === 'pending' && !isProcessing) {
+    action = `data-action="process" data-date="${d.year}-${pad2(d.month)}-${pad2(d.day)}" data-type="${escapeAttr(item.type)}"`;
+    cls += ' week-event-clickable';
+  } else if (st === 'pending-study' && !isProcessing && item.studyDoc) {
+    action = `data-action="process-study" data-fileid="${escapeAttr(item.studyDoc.id)}"`;
+    cls += ' week-event-clickable';
+  }
+
+  const topic = item.topic || (item.driveFile && item.driveFile.topic) || (item.studyDoc && item.studyDoc.topic) || '(未命名)';
+  const speaker = item.speaker || (item.driveFile && item.driveFile.speaker) || (item.studyDoc && item.studyDoc.speaker) || '';
+
+  let h = `<div class="${cls}" ${action}>`;
+  h += '<div class="week-event-topic">' + escapeHtml(topic) + '</div>';
+  if (speaker) h += '<div class="week-event-speaker">' + escapeHtml(speaker) + '</div>';
+  h += '</div>';
+  return h;
 }
 
 function renderDay(d) {
@@ -684,6 +911,23 @@ function bindEvents() {
     const b = e.target.closest('.nav-btn');
     if (!b) return;
     selectMonth(state.sy, b.dataset.m === 'x' ? null : parseInt(b.dataset.m));
+  });
+
+  const vn = document.getElementById('vn');
+  if (vn) vn.addEventListener('click', function (e) {
+    const b = e.target.closest('.nav-btn');
+    if (!b) return;
+    selectView(b.dataset.v);
+  });
+
+  const wn = document.getElementById('wn');
+  if (wn) wn.addEventListener('click', function (e) {
+    const b = e.target.closest('.nav-btn');
+    if (!b || !b.dataset.wk) return;
+    const dir = b.dataset.wk;
+    if (dir === 'prev') gotoWeek(addDays(state.weekDate, -7));
+    else if (dir === 'next') gotoWeek(addDays(state.weekDate, 7));
+    else if (dir === 'today') gotoWeek(getWeekStart(new Date()));
   });
 
   const ml = document.getElementById('ml');
