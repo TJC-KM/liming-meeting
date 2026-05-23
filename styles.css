@@ -285,7 +285,7 @@ a{color:inherit;text-decoration:none}
 .cal-head{display:grid;grid-template-columns:repeat(7,1fr);background:var(--bg2);border-bottom:1px solid var(--bd)}
 .cal-head-cell{padding:8px 6px;text-align:center;font-size:12px;font-weight:600;color:var(--tx2);letter-spacing:1px}
 .cal-head-cell.cal-head-sat{color:var(--accent)}
-.cal-body{display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:minmax(110px, auto)}
+.cal-body{display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:minmax(140px, auto)}
 .cal-cell{border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);padding:6px 6px 8px;display:flex;flex-direction:column;gap:4px;background:var(--bg);min-width:0}
 .cal-cell:nth-child(7n){border-right:0}
 .cal-cell-blank{background:var(--bg2);opacity:.4}
@@ -295,19 +295,25 @@ a{color:inherit;text-decoration:none}
 .cal-cell-today{box-shadow:inset 0 0 0 2px var(--accent)}
 .cal-cell-today .cal-day{color:var(--accent);font-weight:700}
 .cal-day{font-size:13px;font-weight:500;color:var(--tx2);line-height:1;padding:2px 4px}
-.cal-events{display:flex;flex-direction:column;gap:3px;min-width:0}
-.cal-event{font-size:11px;padding:3px 6px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:1px solid transparent;line-height:1.4}
+.cal-events{display:flex;flex-direction:column;gap:4px;min-width:0}
+.cal-event{font-size:11px;padding:4px 6px;border-radius:4px;border:1px solid transparent;line-height:1.3;min-width:0;overflow:hidden}
 .cal-event-clickable{cursor:pointer}
 .cal-event-clickable:hover{filter:brightness(.95)}
 .cal-event-filled{background:var(--accent-bg);color:var(--accent-tx);border-color:var(--accent)}
 .cal-event-pending,.cal-event-pending-study{background:var(--warn-bg);color:var(--warn-tx);border-color:var(--warn)}
 .cal-event-processing{cursor:wait;opacity:.7}
+.cal-event-topic{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal-event-speaker{font-size:10px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.cal-event-badge{display:inline-block;font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;background:rgba(0,0,0,.06);margin-top:2px}
+html.dark .cal-event-badge{background:rgba(255,255,255,.12)}
 
 /* 大字版的月曆：cell 變高、字變大 */
 .desktop.senior .cal-head-cell{font-size:14px;padding:10px 6px}
-.desktop.senior .cal-body{grid-auto-rows:minmax(130px, auto)}
+.desktop.senior .cal-body{grid-auto-rows:minmax(170px, auto)}
 .desktop.senior .cal-day{font-size:15px}
-.desktop.senior .cal-event{font-size:13px;padding:4px 8px}
+.desktop.senior .cal-event{font-size:13px;padding:5px 8px}
+.desktop.senior .cal-event-speaker{font-size:12px}
+.desktop.senior .cal-event-badge{font-size:11px;padding:2px 6px}
 
 /* nav-btn-static：週導覽中間的非按鈕標籤（顯示週次範圍）*/
 .nav-btn-static{cursor:default;background:transparent;border-color:transparent;font-weight:600;color:var(--tx)}
@@ -357,6 +363,9 @@ a{color:inherit;text-decoration:none}
 .week-event-processing{cursor:wait;opacity:.7}
 .week-event-topic{font-size:14px;font-weight:600}
 .week-event-speaker{font-size:12px;opacity:.8;margin-top:2px}
+.week-event-meta{margin-top:4px}
+.week-event-badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,.08)}
+html.dark .week-event-badge{background:rgba(255,255,255,.15)}
 
 /* 大字版週曆：cell 更高、字更大 */
 .desktop.senior .week-cell{min-height:220px;padding:16px 18px}

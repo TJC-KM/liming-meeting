@@ -28,10 +28,9 @@ var state = {
   sy: null,
   sm: null,
   showFuture: false,  // 預設不顯示未來日子；勾選「未來」chip 才顯示
-  view: 'month',      // 'month' | 'week'（電腦版才有 week 選項）
-  weekDate: null,     // 週視圖：當週週日的 Date 物件，由 getWeekStart 設定
+  view: ViewManager.get(),  // 'day' | 'week' | 'month'
+  weekDate: null,            // 週視圖：當週週日的 Date 物件，由 getWeekStart 設定
   theme: ThemeManager.get(),
-  device: DeviceManager.get(),
   loading: true,
   loadingDrive: false,
   driveError: null,
@@ -88,12 +87,17 @@ function init() {
   // 套用配色主題（必須在 render 前）
   ColorThemeManager.apply(ColorThemeManager.get());
 
-  document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(state.theme, null, state.device);
+  document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(state.theme, null, state.view);
   ThemeManager.apply(state.theme, 'app');
-  DeviceManager.apply(state.device, 'app');
+  ViewManager.apply(state.view, 'app');
   bindThemeSwitcher('app', function (change) {
     if (change.size) state.theme = change.size;
-    if (change.device) state.device = change.device;
+    if (change.view) {
+      // 切換視圖 → reset 到「今天」的對應月/週，並重載 drive
+      const before = state.view;
+      state.view = change.view;
+      onViewChange(before, change.view);
+    }
     render();
   });
 
@@ -286,19 +290,23 @@ function selectYear(year) {
   loadDriveForYear(year);
 }
 
-function selectView(v) {
-  if (v !== 'month' && v !== 'week') return;
-  if (state.view === v) return;
-  state.view = v;
-  if (v === 'week') {
-    if (!state.weekDate) state.weekDate = getWeekStart(new Date());
+// 視圖切換的副作用：reset 到「今天」對應的月/週，重新載入 drive 資料
+// 由 bindThemeSwitcher 觸發；不是給 UI 按鈕直接呼叫的（按鈕已併入 themeSwitcher）
+function onViewChange(before, after) {
+  const now = new Date();
+  if (after === 'week') {
+    state.weekDate = getWeekStart(now);
+    state.sy = state.weekDate.getFullYear();
     loadDriveForWeek(state.weekDate);
-  } else {
-    // 切回月：用當前 sy/sm 重載
-    if (state.sm !== null) loadDriveForMonth(state.sy, state.sm);
-    else loadDriveForYear(state.sy);
+  } else if (after === 'month') {
+    state.sy = now.getFullYear();
+    state.sm = now.getMonth();
+    loadDriveForMonth(state.sy, state.sm);
+  } else {  // 'day'
+    state.sy = now.getFullYear();
+    state.sm = now.getMonth();   // 預設單月，使用者可改全年
+    loadDriveForMonth(state.sy, state.sm);
   }
-  render();
 }
 
 function gotoWeek(sundayDate) {
@@ -494,11 +502,9 @@ function _doRender() {
     h += '</div>';
   }
 
-  // 月/週視圖：week 模式只在電腦版啟用
-  const inWeekView = state.device === 'desktop' && state.view === 'week';
-
-  if (inWeekView) {
-    // 週導覽：← 5/17 ~ 5/23 →
+  // 視圖決定的 nav：日→月份(可全年)；週→週導覽；月→月份(無全年)
+  if (state.view === 'week') {
+    if (!state.weekDate) state.weekDate = getWeekStart(new Date());
     h += '<div class="nav-row" id="wn"><span class="nav-label">週次</span>';
     h += '<button class="nav-btn" data-wk="prev">← 上週</button>';
     h += '<button class="nav-btn nav-btn-static">' + formatWeekRange(state.weekDate) + '</button>';
@@ -506,20 +512,16 @@ function _doRender() {
     h += '<button class="nav-btn" data-wk="today">回到本週</button>';
     h += '</div>';
   } else {
-    h += '<div class="nav-row" id="mn"><span class="nav-label">月份</span><button class="nav-btn ' + (state.sm === null ? 'active' : '') + '" data-m="x">全年</button>';
+    // day 與 month 共用月份 nav；「全年」按鈕只在 day 視圖顯示
+    h += '<div class="nav-row" id="mn"><span class="nav-label">月份</span>';
+    if (state.view === 'day') {
+      h += '<button class="nav-btn ' + (state.sm === null ? 'active' : '') + '" data-m="x">全年</button>';
+    }
     for (let i = 11; i >= 0; i--) {
       h += '<button class="nav-btn ' + (state.sm === i ? 'active' : '') + '" data-m="' + i + '">' + (i + 1) + '月';
       if (mc[i] > 0) h += '<span class="cnt">' + mc[i] + '</span>';
       h += '</button>';
     }
-    h += '</div>';
-  }
-
-  // 視圖切換（只在電腦版顯示，因為手機沒有月曆/週曆）
-  if (state.device === 'desktop') {
-    h += '<div class="nav-row" id="vn"><span class="nav-label">視圖</span>';
-    h += '<button class="nav-btn ' + (state.view === 'month' ? 'active' : '') + '" data-v="month">月</button>';
-    h += '<button class="nav-btn ' + (state.view === 'week' ? 'active' : '') + '" data-v="week">週</button>';
     h += '</div>';
   }
 
@@ -543,12 +545,10 @@ function _doRender() {
   }
   h += '</div>';
 
-  // 電腦版視圖選擇：week → 4+3 週曆；month → 月曆網格；其他 → list
-  const useWeek = state.device === 'desktop' && state.view === 'week';
-  const useCalendar = state.device === 'desktop' && state.view === 'month' && state.sm !== null;
-  if (useWeek) {
+  // 視圖派發：week → 4+3 週曆；month + 已選月份 → 月曆網格；其他 (day) → list
+  if (state.view === 'week') {
     h += renderWeekView();
-  } else if (useCalendar) {
+  } else if (state.view === 'month' && state.sm !== null) {
     h += renderCalendarView();
   } else if (days.length === 0) {
     h += '<div class="empty">找不到符合條件的日子</div>';
@@ -676,7 +676,22 @@ function renderCalendarEvent(item, d) {
   }
 
   const topic = item.topic || (item.driveFile && item.driveFile.topic) || (item.studyDoc && item.studyDoc.topic) || '(未命名)';
-  return `<div class="${cls}" ${action} title="${escapeAttr(topic)}">${escapeHtml(topic)}</div>`;
+  const speaker = item.speaker || (item.driveFile && item.driveFile.speaker) || (item.studyDoc && item.studyDoc.speaker) || '';
+
+  // 狀態徽章短文字（cell 寬度有限，用短字）
+  let badge = '';
+  if (isProcessing) badge = '<span class="cal-event-badge">處理中</span>';
+  else if (st === 'filled') badge = '<span class="cal-event-badge">' + escapeHtml(item.status || '草稿') + '</span>';
+  else if (st === 'pending') badge = '<span class="cal-event-badge">待轉錄</span>';
+  else if (st === 'pending-study') badge = '<span class="cal-event-badge">預查</span>';
+
+  const titleAttr = topic + (speaker ? ' / ' + speaker : '');
+  let h = `<div class="${cls}" ${action} title="${escapeAttr(titleAttr)}">`;
+  h += '<div class="cal-event-topic">' + escapeHtml(topic) + '</div>';
+  if (speaker) h += '<div class="cal-event-speaker">' + escapeHtml(speaker) + '</div>';
+  h += badge;
+  h += '</div>';
+  return h;
 }
 
 // === 週曆視圖（電腦版 + 週模式）===
@@ -774,9 +789,17 @@ function renderWeekEvent(item, d) {
   const topic = item.topic || (item.driveFile && item.driveFile.topic) || (item.studyDoc && item.studyDoc.topic) || '(未命名)';
   const speaker = item.speaker || (item.driveFile && item.driveFile.speaker) || (item.studyDoc && item.studyDoc.speaker) || '';
 
+  // 狀態徽章
+  let badge = '';
+  if (isProcessing) badge = '<span class="week-event-badge"><span class="spinner"></span>處理中</span>';
+  else if (st === 'filled') badge = '<span class="week-event-badge">' + escapeHtml(item.status || '草稿') + '</span>';
+  else if (st === 'pending') badge = '<span class="week-event-badge">🎙 待轉錄</span>';
+  else if (st === 'pending-study') badge = '<span class="week-event-badge">📖 預查</span>';
+
   let h = `<div class="${cls}" ${action}>`;
   h += '<div class="week-event-topic">' + escapeHtml(topic) + '</div>';
   if (speaker) h += '<div class="week-event-speaker">' + escapeHtml(speaker) + '</div>';
+  if (badge) h += '<div class="week-event-meta">' + badge + '</div>';
   h += '</div>';
   return h;
 }
@@ -918,13 +941,6 @@ function bindEvents() {
     const b = e.target.closest('.nav-btn');
     if (!b) return;
     selectMonth(state.sy, b.dataset.m === 'x' ? null : parseInt(b.dataset.m));
-  });
-
-  const vn = document.getElementById('vn');
-  if (vn) vn.addEventListener('click', function (e) {
-    const b = e.target.closest('.nav-btn');
-    if (!b) return;
-    selectView(b.dataset.v);
   });
 
   const wn = document.getElementById('wn');

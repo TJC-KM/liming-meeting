@@ -213,24 +213,27 @@ const ThemeManager = {
   },
 };
 
-// 裝置主題：手機 (mobile) / 電腦 (desktop)
-// 首次進入：螢幕寬 >= 900 → desktop，否則 mobile
-const DeviceManager = {
-  KEY: 'church-meeting-device',
+// 視圖：日 (day) / 週 (week) / 月 (month)
+// 首次進入自動偵測：螢幕寬 < 900 → day，>= 900 → week。「月」永遠手動切。
+// 持久化於 localStorage，跨 index/meeting 導覽保留。
+const ViewManager = {
+  KEY: 'church-meeting-view',
+  VALID: ['day', 'week', 'month'],
   get() {
-    const url = new URLSearchParams(location.search).get('device');
-    if (url && ['mobile', 'desktop'].includes(url)) return url;
     const stored = localStorage.getItem(this.KEY);
-    if (stored && ['mobile', 'desktop'].includes(stored)) return stored;
-    return (typeof window !== 'undefined' && window.innerWidth >= 900) ? 'desktop' : 'mobile';
+    if (stored && this.VALID.includes(stored)) return stored;
+    return (typeof window !== 'undefined' && window.innerWidth >= 900) ? 'week' : 'day';
   },
-  set(d) { localStorage.setItem(this.KEY, d); },
-  apply(d, containerId) {
-    // 裝置類別：mobile 不加 class（預設），desktop 加 .desktop
+  set(v) {
+    if (this.VALID.includes(v)) localStorage.setItem(this.KEY, v);
+  },
+  // 同時掛 .view-X（細節）與 .desktop（共用 wide layout 樣式，view!=='day' 都有）
+  apply(v, containerId) {
     const el = document.getElementById(containerId);
     if (!el) return;
-    el.classList.remove('desktop');
-    if (d === 'desktop') el.classList.add('desktop');
+    el.classList.remove('view-day', 'view-week', 'view-month', 'desktop');
+    el.classList.add('view-' + v);
+    if (v !== 'day') el.classList.add('desktop');
   },
 };
 
@@ -249,9 +252,9 @@ const ColorThemeManager = {
 const SUN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
 const MOON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
 
-function renderThemeSwitcher(currentSize, currentColor, currentDevice) {
+function renderThemeSwitcher(currentSize, currentColor, currentView) {
   currentColor = currentColor || ColorThemeManager.get();
-  currentDevice = currentDevice || DeviceManager.get();
+  currentView = currentView || ViewManager.get();
   return `
     <div class="theme-switcher" id="themeSwitcher">
       <div class="theme-group">
@@ -259,8 +262,9 @@ function renderThemeSwitcher(currentSize, currentColor, currentDevice) {
         <button class="theme-btn ${currentSize === 'senior' ? 'active' : ''}" data-t="senior">大字版</button>
       </div>
       <div class="theme-group">
-        <button class="theme-btn ${currentDevice === 'mobile' ? 'active' : ''}" data-d="mobile">手機版</button>
-        <button class="theme-btn ${currentDevice === 'desktop' ? 'active' : ''}" data-d="desktop">電腦版</button>
+        <button class="theme-btn ${currentView === 'day' ? 'active' : ''}" data-v="day">日</button>
+        <button class="theme-btn ${currentView === 'week' ? 'active' : ''}" data-v="week">週</button>
+        <button class="theme-btn ${currentView === 'month' ? 'active' : ''}" data-v="month">月</button>
       </div>
       <div class="theme-group">
         <button class="theme-btn theme-btn-icon ${currentColor === 'light' ? 'active' : ''}" data-c="light" title="淺色">${SUN_SVG}</button>
@@ -278,23 +282,23 @@ function bindThemeSwitcher(containerId, onChange) {
     if (!b) return;
 
     if (b.dataset.t) {
-      // 字級主題
+      // 字級
       sw.querySelectorAll('[data-t]').forEach(t => t.classList.remove('active'));
       b.classList.add('active');
       const t = b.dataset.t;
       ThemeManager.set(t);
       ThemeManager.apply(t, containerId);
       if (onChange) onChange({ size: t });
-    } else if (b.dataset.d) {
-      // 裝置主題
-      sw.querySelectorAll('[data-d]').forEach(d => d.classList.remove('active'));
+    } else if (b.dataset.v) {
+      // 視圖
+      sw.querySelectorAll('[data-v]').forEach(d => d.classList.remove('active'));
       b.classList.add('active');
-      const d = b.dataset.d;
-      DeviceManager.set(d);
-      DeviceManager.apply(d, containerId);
-      if (onChange) onChange({ device: d });
+      const v = b.dataset.v;
+      ViewManager.set(v);
+      ViewManager.apply(v, containerId);
+      if (onChange) onChange({ view: v });
     } else if (b.dataset.c) {
-      // 配色主題
+      // 配色
       sw.querySelectorAll('[data-c]').forEach(c => c.classList.remove('active'));
       b.classList.add('active');
       const c = b.dataset.c;

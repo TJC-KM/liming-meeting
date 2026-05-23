@@ -1,7 +1,7 @@
 // 詳細頁邏輯
 (function () {
   var theme = ThemeManager.get();
-  var device = DeviceManager.get();
+  var view = ViewManager.get();   // 跟 index 同一個 localStorage 來源
   var params = new URLSearchParams(location.search);
   var id = params.get('id');
   var qDate = params.get('date');
@@ -16,12 +16,13 @@
 
   ColorThemeManager.apply(ColorThemeManager.get());
 
-  document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(theme, null, device);
+  document.getElementById('themeSlot').innerHTML = renderThemeSwitcher(theme, null, view);
   ThemeManager.apply(theme, 'app');
-  DeviceManager.apply(device, 'app');
+  ViewManager.apply(view, 'app');
+  // view 改變只影響佈局（窄/寬），不需要重打 API
   bindThemeSwitcher('app', function (change) {
     if (change.size) theme = change.size;
-    if (change.device) device = change.device;
+    if (change.view) view = change.view;
   });
 
   if (id) {
