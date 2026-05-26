@@ -985,6 +985,7 @@ async function handleProcess(date, type) {
   const sizeMB = file ? file.sizeMB : null;
 
   // 設 lock — in-memory + localStorage 持久化，避免重複觸發
+  console.log(`[handleProcess] 設 lock key="${key}", file=${file ? file.name : '(unknown)'}`);
   markProcessing(key);
   startProcessingTicker();
   startCompletionPolling();
@@ -1081,25 +1082,34 @@ function startCompletionPolling() {
   if (_completionPoll) return;
   if (Object.keys(state.processing).length === 0) return;
 
-  _completionPoll = setInterval(async function () {
+  console.log(`[poll] 開始輪詢，間隔 15s`);
+  // 立刻先檢查一次，不要等 15 秒
+  _pollOnce();
+
+  _completionPoll = setInterval(_pollOnce, 15000);
+}
+
+async function _pollOnce() {
     if (Object.keys(state.processing).length === 0) {
       clearInterval(_completionPoll);
       _completionPoll = null;
+      console.log('[poll] 沒有處理中，停止輪詢');
       return;
     }
     try {
       const result = await api.listMeetings();
       const meetings = result.meetings || [];
+      const keys = Object.keys(state.processing);
+      console.log(`[poll] 檢查 ${keys.length} 個處理中: [${keys.join(', ')}]，Notion 共 ${meetings.length} 筆`);
       let changed = false;
 
-      Object.keys(state.processing).forEach(function (key) {
+      keys.forEach(function (key) {
         let match;
         if (key.indexOf('study_') === 0) {
-          // study_<fileId>
           const fileId = key.substring(6);
           match = meetings.find(m => m.studyUrl && m.studyUrl.indexOf(fileId) >= 0);
+          if (!match) console.log(`[poll] ✗ 未匹配 ${key}（找不到 studyUrl 包含 ${fileId} 的紀錄）`);
         } else {
-          // YYYY-MM-DD_<type>
           const idx = key.indexOf('_');
           const date = key.substring(0, idx);
           const type = key.substring(idx + 1);
@@ -1107,9 +1117,13 @@ function startCompletionPolling() {
             const d = m.date ? m.date.substring(0, 10) : '';
             return d === date && m.type === type;
           });
+          if (!match) {
+            const sameDate = meetings.filter(m => (m.date || '').substring(0, 10) === date);
+            console.log(`[poll] ✗ 未匹配 ${key}: Notion 同日期 ${sameDate.length} 筆, types=[${sameDate.map(m => m.type).join(', ')}]`);
+          }
         }
         if (match) {
-          console.log(`[poll] 偵測完成：${match.topic}`);
+          console.log(`[poll] ✓ 偵測完成：${match.topic}（清掉 ${key}）`);
           clearProcessing(key);
           changed = true;
         }
@@ -1133,7 +1147,6 @@ function startCompletionPolling() {
     } catch (e) {
       console.warn(`[poll] 輪詢失敗（會重試）：${e.message}`);
     }
-  }, 15000);
 }
 
 function pad2(n) { return String(n).padStart(2, '0'); }
