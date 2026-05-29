@@ -487,20 +487,42 @@
       if (b.type === 'heading_3') {
         if (section !== null) {
           closeList();
-          section += '<div class="md-subhead">' + escapeHtml(b.text) + '</div>';
+          section += '<div class="md-subhead' + colorCls(b) + '">' + renderRich(b) + '</div>';
         }
+      } else if (b.type === 'quote') {
+        if (section === null) openSection('內容');
+        closeList();
+        section += '<blockquote class="md-quote">' + renderRich(b) + '</blockquote>';
       } else if (b.type === 'bulleted_list_item') {
         if (section === null) openSection('內容');
         openList();
-        section += '<li>' + escapeHtml(b.text) + '</li>';
+        section += '<li>' + renderRich(b) + '</li>';
       } else if (b.text && b.text.trim()) {
         if (section === null) openSection('內容');
         closeList();
-        section += '<p>' + escapeHtml(b.text) + '</p>';
+        section += '<p' + (colorCls(b) ? ' class="' + colorCls(b).trim() + '"' : '') + '>' + renderRich(b) + '</p>';
       }
     });
     closeSection();
     return h;
+  }
+
+  // block 級顏色 → class（前面帶空格方便串接）
+  function colorCls(b) {
+    return b.color ? ' tx-' + String(b.color).replace('_background', '-bg') : '';
+  }
+
+  // 把 rich 片段（bold/italic/color）渲染成帶樣式的 HTML；沒有 rich 就退回純文字
+  function renderRich(b) {
+    if (!b.rich || !b.rich.length) return escapeHtml(b.text || '');
+    return b.rich.map(function (seg) {
+      var c = escapeHtml(seg.t);
+      if (!c) return '';
+      if (seg.c) c = '<span class="tx-' + String(seg.c).replace('_background', '-bg') + '">' + c + '</span>';
+      if (seg.i) c = '<em>' + c + '</em>';
+      if (seg.b) c = '<strong>' + c + '</strong>';
+      return c;
+    }).join('');
   }
 
   function escapeHtml(s) {

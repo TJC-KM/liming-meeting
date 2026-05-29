@@ -218,6 +218,20 @@ a{color:inherit;text-decoration:none}
 .md-list{padding-left:24px;margin-bottom:12px}
 .md-list li{line-height:1.8;margin-bottom:6px}
 
+/* rich text：粗體 / 斜體 / 經文引用 / Notion 顏色 */
+.section-body strong{font-weight:700;color:var(--tx)}
+.section-body em{font-style:italic}
+.md-quote{border-left:3px solid var(--accent);background:var(--bg2);padding:10px 16px;margin:10px 0;border-radius:0 var(--radius) var(--radius) 0;line-height:1.9;color:var(--tx)}
+.senior .md-quote{font-size:17px;line-height:2.1}
+/* Notion 文字顏色（淺色主題） */
+.tx-orange{color:#c2680c}.tx-blue{color:#2563eb}.tx-purple{color:#7c3aed}
+.tx-red{color:#dc2626}.tx-green{color:#059669}.tx-gray{color:var(--tx3)}
+.tx-brown{color:#8b5a2b}.tx-yellow{color:#b45309}.tx-pink{color:#db2777}
+/* 深色主題：提亮 */
+html.dark .tx-orange{color:#fb923c}html.dark .tx-blue{color:#60a5fa}html.dark .tx-purple{color:#a78bfa}
+html.dark .tx-red{color:#f87171}html.dark .tx-green{color:#34d399}
+html.dark .tx-brown{color:#bfa094}html.dark .tx-yellow{color:#fbbf24}html.dark .tx-pink{color:#f472b6}
+
 .verse-card{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px}
 .verse-card:last-child{margin-bottom:0}
 .verse-ref{font-size:13px;font-weight:600;color:var(--accent);margin-bottom:8px}
