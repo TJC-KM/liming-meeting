@@ -530,7 +530,8 @@
 
   // 公開錄音檔播放器：native <audio> + 加速按鈕 + 跳秒
   function audioPlayerHTML(fileId) {
-    var src = 'https://drive.usercontent.google.com/download?id=' + encodeURIComponent(fileId) + '&export=download&confirm=t';
+    // 走 worker 代理（用 SA 抓 Drive 檔，支援 Range seeking + 任意權限的檔）
+    var src = 'https://church-meeting-api.c3012312.workers.dev/audio?fileId=' + encodeURIComponent(fileId);
     var h = '<div class="audio-embed" data-file-id="' + escapeAttr(fileId) + '">';
     h += '<audio controls preload="metadata" src="' + escapeAttr(src) + '"></audio>';
     h += '<div class="audio-ctrls">';
