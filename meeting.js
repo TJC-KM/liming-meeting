@@ -236,9 +236,7 @@
     h += '<aside class="meeting-aside">';
 
     if (qAudioFileId) {
-      h += '<div class="audio-embed">';
-      h += '<iframe src="https://drive.google.com/file/d/' + escapeAttr(qAudioFileId) + '/preview" allow="autoplay" frameborder="0"></iframe>';
-      h += '</div>';
+      h += audioPlayerHTML(qAudioFileId);
     }
 
     h += '<div class="actions">';
@@ -365,9 +363,7 @@
     if (m.audioUrl) {
       const driveFileId = (m.audioUrl.match(/\/d\/([^\/]+)/) || [])[1];
       if (driveFileId) {
-        h += '<div class="audio-embed">';
-        h += '<iframe src="https://drive.google.com/file/d/' + escapeAttr(driveFileId) + '/preview" allow="autoplay" frameborder="0"></iframe>';
-        h += '</div>';
+        h += audioPlayerHTML(driveFileId);
       }
     }
 
@@ -531,4 +527,54 @@
     });
   }
   function escapeAttr(s) { return escapeHtml(s); }
+
+  // 公開錄音檔播放器：native <audio> + 加速按鈕 + 跳秒
+  function audioPlayerHTML(fileId) {
+    var src = 'https://drive.usercontent.google.com/download?id=' + encodeURIComponent(fileId) + '&export=download&confirm=t';
+    var h = '<div class="audio-embed" data-file-id="' + escapeAttr(fileId) + '">';
+    h += '<audio controls preload="metadata" src="' + escapeAttr(src) + '"></audio>';
+    h += '<div class="audio-ctrls">';
+    h += '<button type="button" class="audio-skip" data-skip="-15" title="退 15 秒">⏪ 15s</button>';
+    h += '<div class="audio-speed">';
+    h += '<button type="button" data-rate="1" class="active">1x</button>';
+    h += '<button type="button" data-rate="1.25">1.25</button>';
+    h += '<button type="button" data-rate="1.5">1.5</button>';
+    h += '<button type="button" data-rate="1.75">1.75</button>';
+    h += '<button type="button" data-rate="2">2x</button>';
+    h += '</div>';
+    h += '<button type="button" class="audio-skip" data-skip="15" title="快轉 15 秒">15s ⏩</button>';
+    h += '</div>';
+    h += '</div>';
+    return h;
+  }
+
+  // 加速 + 跳秒按鈕事件委派（一次性綁定）+ 載入失敗時 fallback 到 iframe preview
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.matches) return;
+    if (t.matches('.audio-speed button')) {
+      var box = t.closest('.audio-embed');
+      var au = box && box.querySelector('audio');
+      if (!au) return;
+      au.playbackRate = parseFloat(t.dataset.rate) || 1;
+      box.querySelectorAll('.audio-speed button').forEach(function (b) {
+        b.classList.toggle('active', b === t);
+      });
+    } else if (t.matches('.audio-skip')) {
+      var box2 = t.closest('.audio-embed');
+      var au2 = box2 && box2.querySelector('audio');
+      if (!au2 || !isFinite(au2.duration)) return;
+      au2.currentTime = Math.max(0, Math.min(au2.duration, au2.currentTime + (parseFloat(t.dataset.skip) || 0)));
+    }
+  });
+  // 播放器載入失敗 → 換回 iframe preview（公開連結偶爾擋串流時的保底）
+  document.addEventListener('error', function (e) {
+    var au = e.target;
+    if (!au || au.tagName !== 'AUDIO') return;
+    var box = au.closest('.audio-embed');
+    if (!box) return;
+    var fileId = box.getAttribute('data-file-id');
+    if (!fileId) return;
+    box.innerHTML = '<iframe src="https://drive.google.com/file/d/' + escapeAttr(fileId) + '/preview" allow="autoplay" frameborder="0"></iframe>';
+  }, true);
 })();
