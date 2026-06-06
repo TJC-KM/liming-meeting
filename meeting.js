@@ -404,6 +404,18 @@
     // === 左側 main：重點內容（電腦版的視覺主角）===
     h += '<main class="meeting-main">';
 
+    // AI 筆記聲明：錄音轉檔的頁面，要先確認才能看內容
+    var hasBody = m.blocks && m.blocks.length > 0;
+    var hasContent = m.info || m.summary || hasBody;
+    var isAI = !!m.audioUrl && hasContent;
+    var ackKey = isAI && m.id ? 'aiAck:' + m.id : '';
+    var acked = false;
+    if (ackKey) { try { acked = localStorage.getItem(ackKey) === '1'; } catch (e) { acked = false; } }
+    var gated = isAI && !acked;
+    if (gated) h += aiDisclaimerHTML(m);
+
+    h += '<div class="meeting-content"' + (gated ? ' id="meetingContent" hidden' : '') + '>';
+
     if (m.info) {
       h += '<div class="section">';
       h += '<div class="section-title">📢 聚會資訊</div>';
@@ -418,13 +430,13 @@
       h += '</div>';
     }
 
-    var hasBody = m.blocks && m.blocks.length > 0;
     if (hasBody) h += renderBlocks(m.blocks);
 
-    if (!m.info && !m.summary && !hasBody) {
+    if (!hasContent) {
       h += '<div class="empty">此聚會尚未有整理內容</div>';
     }
 
+    h += '</div>';  // .meeting-content
     h += '</main>';
 
     return h;
@@ -528,6 +540,30 @@
   }
   function escapeAttr(s) { return escapeHtml(s); }
 
+  // AI 筆記聲明卡（錄音轉檔頁面開啟時擋在內容前面，按按鈕才解鎖）
+  function aiDisclaimerHTML(m) {
+    var status = m.status || '草稿';
+    var h = '<div class="ai-disclaimer" data-id="' + escapeAttr(m.id || '') + '">';
+    h += '<div class="ai-disclaimer-head">';
+    h += '<div class="ai-disclaimer-icon">⚠️</div>';
+    h += '<div>';
+    h += '<div class="ai-disclaimer-title">AI 筆記｜請先閱讀聲明</div>';
+    h += '<div class="ai-disclaimer-sub">本頁目前狀態：<strong>' + escapeHtml(status) + '</strong></div>';
+    h += '</div></div>';
+    h += '<p class="ai-disclaimer-body">本頁面下方的「<strong>簡易重點</strong>」與「<strong>完整重點</strong>」皆由 <strong>AI 從錄音檔自動辨識</strong>整理而成，<strong>尚未經人工逐字校對</strong>。</p>';
+    h += '<p class="ai-disclaimer-body">可能存在下列情況：</p>';
+    h += '<ul class="ai-disclaimer-list">';
+    h += '<li>經文書卷、章節、節數辨識錯誤</li>';
+    h += '<li>講者用詞、見證內容、聖經引用轉寫不準</li>';
+    h += '<li>段落結構偏離講道原意，或漏掉重要內容</li>';
+    h += '</ul>';
+    h += '<div class="ai-disclaimer-warn">本頁僅供 <strong>個人靈修複習</strong> 之輔助參考。<br>請勿轉發、引用，或作為信仰教義之依據。<br>正式內容請以<strong>錄音檔</strong>，或經傳道核閱後之版本為準。</div>';
+    h += '<button type="button" id="aiAckBtn" class="ai-ack-btn">我已了解，繼續閱讀 AI 筆記</button>';
+    h += '<div class="ai-disclaimer-foot">（按下後同頁面不會再次提醒）</div>';
+    h += '</div>';
+    return h;
+  }
+
   // 公開錄音檔播放器：native <audio> + 加速按鈕 + 跳秒
   function audioPlayerHTML(fileId) {
     // 走 worker 代理（用 SA 抓 Drive 檔，支援 Range seeking + 任意權限的檔）
@@ -566,6 +602,15 @@
       var au2 = box2 && box2.querySelector('audio');
       if (!au2 || !isFinite(au2.duration)) return;
       au2.currentTime = Math.max(0, Math.min(au2.duration, au2.currentTime + (parseFloat(t.dataset.skip) || 0)));
+    } else if (t.id === 'aiAckBtn' || (t.closest && t.closest('#aiAckBtn'))) {
+      // AI 聲明確認 → 記住、隱藏卡片、顯示內容
+      var ackBtn = t.id === 'aiAckBtn' ? t : t.closest('#aiAckBtn');
+      var card = ackBtn.closest('.ai-disclaimer');
+      var pid = card && card.getAttribute('data-id');
+      if (pid) { try { localStorage.setItem('aiAck:' + pid, '1'); } catch (e) {} }
+      if (card) card.remove();
+      var content = document.getElementById('meetingContent');
+      if (content) { content.hidden = false; content.removeAttribute('id'); }
     }
   });
   // 播放器載入失敗 → 換回 iframe preview（公開連結偶爾擋串流時的保底）

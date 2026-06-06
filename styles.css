@@ -257,6 +257,32 @@ html.dark .tx-brown{color:#bfa094}html.dark .tx-yellow{color:#fbbf24}html.dark .
 .action-btn:disabled:hover{background:var(--bg);border-color:var(--bd)}
 .action-btn svg{width:16px;height:16px}
 
+/* === AI 筆記聲明卡（錄音轉檔頁面開啟先擋住） === */
+.ai-disclaimer{background:#fff8e6;border:2px solid #f0c060;border-radius:var(--radius-lg);padding:22px;margin-bottom:18px}
+.ai-disclaimer-head{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+.ai-disclaimer-icon{font-size:36px;line-height:1}
+.ai-disclaimer-title{font-size:17px;font-weight:700;color:#8a4500}
+.ai-disclaimer-sub{font-size:12px;color:#a06000;margin-top:2px}
+.ai-disclaimer-body{font-size:14px;line-height:1.8;color:#333;margin:0 0 10px}
+.ai-disclaimer-list{font-size:13px;line-height:1.8;margin:0 0 14px 22px;color:#555}
+.ai-disclaimer-warn{background:#fff;border-left:4px solid #d97706;padding:12px 14px;border-radius:var(--radius);margin:12px 0 16px;font-size:13px;line-height:1.7;color:#333}
+.ai-disclaimer-warn strong{color:#a04500}
+.ai-ack-btn{display:block;width:100%;padding:14px;background:var(--accent);color:#fff;border:0;border-radius:var(--radius);font-size:15px;font-weight:600;cursor:pointer;font-family:var(--font);transition:opacity .12s}
+.ai-ack-btn:hover{opacity:.9}
+.ai-disclaimer-foot{font-size:11px;color:#a06000;text-align:center;margin-top:8px}
+html.dark .ai-disclaimer{background:#2a1f0a;border-color:#8a6500}
+html.dark .ai-disclaimer-title{color:#ffd380}
+html.dark .ai-disclaimer-sub,html.dark .ai-disclaimer-foot{color:#caa060}
+html.dark .ai-disclaimer-body{color:var(--tx)}
+html.dark .ai-disclaimer-list{color:var(--tx2)}
+html.dark .ai-disclaimer-warn{background:#1a1a1a;border-left-color:#f0a020;color:var(--tx)}
+html.dark .ai-disclaimer-warn strong{color:#ffa850}
+.senior .ai-disclaimer{padding:28px}
+.senior .ai-disclaimer-title{font-size:20px}
+.senior .ai-disclaimer-body,.senior .ai-disclaimer-warn{font-size:16px}
+.senior .ai-disclaimer-list{font-size:15px}
+.senior .ai-ack-btn{font-size:17px;padding:16px}
+
 /* === 處理中模式（meeting page） === */
 /* 低調的「處理中」徽章：用草稿灰色，不搶眼、不警告 */
 .badge-processing{background:var(--draft-bg);color:var(--draft-tx);border:1px solid var(--bd2)}
