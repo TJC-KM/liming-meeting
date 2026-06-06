@@ -404,14 +404,10 @@
     // === 左側 main：重點內容（電腦版的視覺主角）===
     h += '<main class="meeting-main">';
 
-    // AI 筆記聲明：錄音轉檔的頁面，要先確認才能看內容
+    // AI 筆記聲明：錄音轉檔的頁面，每次進來都要先確認才能看內容（教會謹慎方針）
     var hasBody = m.blocks && m.blocks.length > 0;
     var hasContent = m.info || m.summary || hasBody;
-    var isAI = !!m.audioUrl && hasContent;
-    var ackKey = isAI && m.id ? 'aiAck:' + m.id : '';
-    var acked = false;
-    if (ackKey) { try { acked = localStorage.getItem(ackKey) === '1'; } catch (e) { acked = false; } }
-    var gated = isAI && !acked;
+    var gated = !!m.audioUrl && hasContent;
     if (gated) h += aiDisclaimerHTML(m);
 
     h += '<div class="meeting-content"' + (gated ? ' id="meetingContent" hidden' : '') + '>';
@@ -559,7 +555,6 @@
     h += '</ul>';
     h += '<div class="ai-disclaimer-warn">本頁僅供 <strong>個人靈修複習</strong> 之輔助參考。<br>請勿轉發、引用，或作為信仰教義之依據。<br>正式內容請以<strong>錄音檔</strong>，或經傳道核閱後之版本為準。</div>';
     h += '<button type="button" id="aiAckBtn" class="ai-ack-btn">我已了解，繼續閱讀 AI 筆記</button>';
-    h += '<div class="ai-disclaimer-foot">（按下後同頁面不會再次提醒）</div>';
     h += '</div>';
     return h;
   }
@@ -603,11 +598,9 @@
       if (!au2 || !isFinite(au2.duration)) return;
       au2.currentTime = Math.max(0, Math.min(au2.duration, au2.currentTime + (parseFloat(t.dataset.skip) || 0)));
     } else if (t.id === 'aiAckBtn' || (t.closest && t.closest('#aiAckBtn'))) {
-      // AI 聲明確認 → 記住、隱藏卡片、顯示內容
+      // AI 聲明確認 → 隱藏卡片、顯示內容（不記憶，下次進來照樣提醒）
       var ackBtn = t.id === 'aiAckBtn' ? t : t.closest('#aiAckBtn');
       var card = ackBtn.closest('.ai-disclaimer');
-      var pid = card && card.getAttribute('data-id');
-      if (pid) { try { localStorage.setItem('aiAck:' + pid, '1'); } catch (e) {} }
       if (card) card.remove();
       var content = document.getElementById('meetingContent');
       if (content) { content.hidden = false; content.removeAttribute('id'); }
