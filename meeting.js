@@ -606,14 +606,17 @@
       if (content) { content.hidden = false; content.removeAttribute('id'); }
     }
   });
-  // 播放器載入失敗 → 換回 iframe preview（公開連結偶爾擋串流時的保底）
+  // 播放器載入失敗 → 換成 Drive 直連（保留倍速按鈕，不需登入）
   document.addEventListener('error', function (e) {
     var au = e.target;
     if (!au || au.tagName !== 'AUDIO') return;
+    if (au.dataset.fallback) return;
     var box = au.closest('.audio-embed');
     if (!box) return;
     var fileId = box.getAttribute('data-file-id');
     if (!fileId) return;
-    box.innerHTML = '<iframe src="https://drive.google.com/file/d/' + escapeAttr(fileId) + '/preview" allow="autoplay" frameborder="0"></iframe>';
+    au.dataset.fallback = '1';
+    au.src = 'https://drive.google.com/uc?export=download&id=' + encodeURIComponent(fileId);
+    au.load();
   }, true);
 })();
