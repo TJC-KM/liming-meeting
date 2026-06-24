@@ -323,11 +323,14 @@
       }
       try {
         const result = await api.listMeetings();
-        // 預查處理時用 studyUrl 比對 fileId（真實日期可能與估計不同）
-        // 一般錄音則用 date + type
+        // fileId 比對為主（每個檔唯一 → 同日同時段多場活動不會撞）
+        // 沒 fileId 才回退到 date+type
         const found = (result.meetings || []).find(m => {
           if (qStudyFileId && m.studyUrl) {
             return m.studyUrl.indexOf(qStudyFileId) >= 0;
+          }
+          if (qAudioFileId && m.audioUrl) {
+            return m.audioUrl.indexOf(qAudioFileId) >= 0;
           }
           const d = m.date ? m.date.substring(0, 10) : '';
           return d === qDate && m.type === qType;
