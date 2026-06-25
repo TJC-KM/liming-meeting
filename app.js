@@ -657,7 +657,9 @@ function renderCalendarCell(d) {
 
 function renderCalendarEvent(item, d) {
   const st = item._state;
-  const procKey = `${d.year}-${pad2(d.month)}-${pad2(d.day)}_${item.type}`;
+  // 用 fileId 當 processing key（同 date+type 多場活動才能各自獨立追蹤）
+  const fid = item.driveFile && item.driveFile.id;
+  const procKey = fid || `${d.year}-${pad2(d.month)}-${pad2(d.day)}_${item.type}`;
   const isProcessing = !!state.processing[procKey];
 
   let action = '';
@@ -668,7 +670,7 @@ function renderCalendarEvent(item, d) {
     action = `data-action="open" data-id="${escapeAttr(item.id)}"`;
     cls += ' cal-event-clickable';
   } else if (st === 'pending' && !isProcessing) {
-    action = `data-action="process" data-date="${d.year}-${pad2(d.month)}-${pad2(d.day)}" data-type="${escapeAttr(item.type)}"`;
+    action = `data-action="process" data-date="${d.year}-${pad2(d.month)}-${pad2(d.day)}" data-type="${escapeAttr(item.type)}" data-fileid="${escapeAttr(fid || '')}"`;
     cls += ' cal-event-clickable';
   } else if (st === 'pending-study' && !isProcessing && item.studyDoc) {
     action = `data-action="process-study" data-fileid="${escapeAttr(item.studyDoc.id)}"`;
@@ -768,7 +770,8 @@ function renderWeekCell(d) {
 
 function renderWeekEvent(item, d) {
   const st = item._state;
-  const procKey = `${d.year}-${pad2(d.month)}-${pad2(d.day)}_${item.type}`;
+  const fid = item.driveFile && item.driveFile.id;
+  const procKey = fid || `${d.year}-${pad2(d.month)}-${pad2(d.day)}_${item.type}`;
   const isProcessing = !!state.processing[procKey];
 
   let action = '';
@@ -779,7 +782,7 @@ function renderWeekEvent(item, d) {
     action = `data-action="open" data-id="${escapeAttr(item.id)}"`;
     cls += ' week-event-clickable';
   } else if (st === 'pending' && !isProcessing) {
-    action = `data-action="process" data-date="${d.year}-${pad2(d.month)}-${pad2(d.day)}" data-type="${escapeAttr(item.type)}"`;
+    action = `data-action="process" data-date="${d.year}-${pad2(d.month)}-${pad2(d.day)}" data-type="${escapeAttr(item.type)}" data-fileid="${escapeAttr(fid || '')}"`;
     cls += ' week-event-clickable';
   } else if (st === 'pending-study' && !isProcessing && item.studyDoc) {
     action = `data-action="process-study" data-fileid="${escapeAttr(item.studyDoc.id)}"`;
@@ -830,7 +833,8 @@ function renderDay(d) {
 
 function renderRow(r) {
   const st = r._state;
-  const procKey = `${r.year}-${pad2(r.month)}-${pad2(r.day)}_${r.type}`;
+  const fid = r.driveFile && r.driveFile.id;
+  const procKey = fid || `${r.year}-${pad2(r.month)}-${pad2(r.day)}_${r.type}`;
   const isProcessing = !!state.processing[procKey];
 
   let badgeClass, badgeText, clickable = false, action = '';
@@ -853,7 +857,7 @@ function renderRow(r) {
       badgeText = '🎙 待轉錄';
     }
     clickable = !isProcessing && gasApi.enabled();
-    action = `data-action="process" data-date="${r.year}-${pad2(r.month)}-${pad2(r.day)}" data-type="${escapeAttr(r.type)}"`;
+    action = `data-action="process" data-date="${r.year}-${pad2(r.month)}-${pad2(r.day)}" data-type="${escapeAttr(r.type)}" data-fileid="${escapeAttr(fid || '')}"`;
   } else if (st === 'pending-study') {
     badgeClass = 'badge-pending';
     if (isProcessing) {
@@ -966,7 +970,7 @@ function bindEvents() {
         const id = b.dataset.id;
         if (id) location.href = 'meeting.html?id=' + encodeURIComponent(id) + (state.theme !== 'adult' ? '&theme=' + state.theme : '');
       } else if (action === 'process') {
-        handleProcess(b.dataset.date, b.dataset.type);
+        handleProcess(b.dataset.date, b.dataset.type, b.dataset.fileid);
       } else if (action === 'process-study') {
         handleProcessStudy(b.dataset.fileid);
       }
@@ -975,11 +979,14 @@ function bindEvents() {
 }
 var _rootClickBound = false;
 
-async function handleProcess(date, type) {
-  const key = `${date}_${type}`;
+async function handleProcess(date, type, fileId) {
+  // 優先用 fileId 找檔（精準），fallback 才用 date+type（同 date+type 多場活動時會 first-match 撞錯場）
+  const file = (fileId && state.driveFiles.find(f => f.id === fileId))
+            || state.driveFiles.find(f => f.date === date && f.type === type);
+  const fid = (file && file.id) || fileId || '';
+  const key = fid || `${date}_${type}`;
   if (state.processing[key]) return;
 
-  const file = state.driveFiles.find(f => f.date === date && f.type === type);
   const topic = file ? file.topic : '';
   const speaker = file ? file.speaker : '';
   const sizeMB = file ? file.sizeMB : null;
@@ -991,7 +998,8 @@ async function handleProcess(date, type) {
   startCompletionPolling();
 
   // 發 Worker 請求（不 await，keepalive 確保離開頁面仍會送出）
-  gasApi.process(date, type)
+  // 傳 fileId 為主，避免 worker 用 date+type 找又中第一場
+  gasApi.process(date, type, fid)
     .then(r => console.log('[process] worker 完成', r))
     .catch(e => console.warn('[process] worker 失敗', e.message));
 
@@ -1003,7 +1011,7 @@ async function handleProcess(date, type) {
     topic: topic || '',
     speaker: speaker || '',
     sizeMB: sizeMB ? String(sizeMB) : '',
-    audioFileId: file ? file.id : '',
+    audioFileId: fid,
     processing: '1',
   });
   if (state.theme !== 'adult') qp.set('theme', state.theme);

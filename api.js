@@ -58,8 +58,11 @@ const gasApi = {
     return data;
   },
 
-  async process(date, type) {
-    const params = new URLSearchParams({ date, type });
+  async process(date, type, fileId) {
+    // fileId 為主，date+type fallback —— 同 date+type 多場活動才能精準指到對的檔
+    const p = { date, type };
+    if (fileId) p.fileId = fileId;
+    const params = new URLSearchParams(p);
     const r = await fetch(`${CONFIG.API_URL}/drive/process?${params}`, {
       method: 'POST',
       cache: 'no-store',
