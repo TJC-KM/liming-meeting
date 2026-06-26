@@ -6,16 +6,16 @@ account_id = "8e2eb47cb86e3cfb953c89dd148b6137"
 [vars]
 GEMINI_MODEL = "gemini-flash-latest"
 CONFIG_SHEET_ID = "1F7fP03oexK4lrerV-hRHM1ooKirwZnuguCerGK6jogo"
+# Free tier 限 50 subrequest/invocation：每檔處理用 ~25 個 subrequest + cron 預載 ~8 個 ≈ 33
+# 第 2 個檔就會爆「Too many subrequests」→ 一次 cron 只跑 1 個檔
+QUOTA_PER_RUN = "1"
 
 # 排程：每天 12:30 + 21:30 Asia/Taipei（UTC 04:30 + 13:30）
-# 每次最多處理 QUOTA_PER_RUN 筆（預設 5，free tier 50 subrequest 限制）
-# 兩次合起來一天約 10 筆，符合 Gemini 配額與穩定性平衡
+# 一天 2 次 cron，每次 1 檔 = 一天最多 2 檔自動處理（避免 Gemini 額度爆）
+# 教會檔多時可手動到 meeting 頁按處理（每按一次走獨立 invocation）
 # Cron 格式：minute hour day-of-month month day-of-week（時間都是 UTC）
 [triggers]
 crons = ["30 4 * * *", "30 13 * * *"]
-
-# 可選環境變數：
-#   QUOTA_PER_RUN = "5"  # 每次 cron 最多處理幾筆（手動改值不必重新部署，從 Dashboard 設）
 
 # 啟用 Workers Logs（持久化 log，可在 Dashboard → Observability → Logs 查詢）
 [observability.logs]

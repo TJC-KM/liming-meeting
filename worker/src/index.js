@@ -685,9 +685,10 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
     throw new Error('Gemini 上傳失敗：' + JSON.stringify(upData).substring(0, 500));
   }
 
-  // 2. 等待 ACTIVE（短，跟參考實作一樣 12 秒）
+  // 2. 等待 ACTIVE（free tier 省 subrequest：3 次 polling，每次間隔 2 秒，共 6 秒）
+  // 大檔可能撈不到 ACTIVE，整體流程的 retry 機制兜底
   let state = upData.file.state || 'PROCESSING';
-  for (let i = 0; i < 6 && state !== 'ACTIVE'; i++) {
+  for (let i = 0; i < 3 && state !== 'ACTIVE'; i++) {
     await new Promise(r => setTimeout(r, 2000));
     const chk = await fetch(`${GEMINI_BASE}/${upData.file.name}?key=${apiKey}`);
     const chkData = await chk.json();
