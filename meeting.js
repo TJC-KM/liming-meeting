@@ -36,16 +36,32 @@
     document.getElementById('root').innerHTML = '<div class="empty">缺少聚會 ID 或 date+type</div>';
   }
 
+  // 狀態屬於「處理中」的字串（worker 各階段會 update）→ 需 polling
+  var PROCESSING_STATUSES = ['處理中', '下載中', 'AI 分析中', 'AI 分析中（前半）', 'AI 分析中（後半）', '整合中', '寫入內容'];
+  var _statusPoll = null;
+  function isProcessingStatus(s) { return s && PROCESSING_STATUSES.indexOf(s) >= 0; }
+
   function loadById(theId) {
     api.getMeeting(theId)
       .then(function (m) {
         document.title = (m.topic || '聚會紀錄') + ' - 教會聚會紀錄';
         document.getElementById('root').innerHTML = renderMeeting(m);
         bindActionButtons(m);
+        // 處理中狀態 → 啟動 5 秒 polling 直到狀態變終態
+        if (isProcessingStatus(m.status)) startStatusPolling(theId);
+        else stopStatusPolling();
       })
       .catch(function (err) {
         document.getElementById('root').innerHTML = '<div class="empty">載入失敗：' + err.message + '</div>';
       });
+  }
+
+  function startStatusPolling(theId) {
+    stopStatusPolling();
+    _statusPoll = setInterval(function () { loadById(theId); }, 5000);
+  }
+  function stopStatusPolling() {
+    if (_statusPoll) { clearInterval(_statusPoll); _statusPoll = null; }
   }
 
   // === 分享 + 心得 ===
@@ -347,9 +363,30 @@
 
   function renderMeeting(m) {
     var d = formatDate(m.date);
-    var bc = m.status === '已發布' ? 'badge-pub' : m.status === '預告' ? 'badge-up' : 'badge-draft';
+    var bc = m.status === '已發布' ? 'badge-pub' : m.status === '預告' ? 'badge-up' : m.status === '失敗' ? 'badge-failed' : 'badge-draft';
 
     var h = '';
+
+    // 處理中 banner：藍色，旋轉 icon + 當前階段
+    if (isProcessingStatus(m.status)) {
+      h += '<div class="proc-banner proc-banner-running">';
+      h += '<div class="proc-spinner"></div>';
+      h += '<div class="proc-body">';
+      h += '<div class="proc-title">📡 處理中：' + escapeHtml(m.status) + '</div>';
+      h += '<div class="proc-sub">頁面 5 秒自動更新一次，請稍候（大檔可能 2-3 分鐘）</div>';
+      h += '</div></div>';
+    }
+    // 失敗 banner：紅色，顯示錯誤訊息
+    else if (m.status === '失敗') {
+      h += '<div class="proc-banner proc-banner-failed">';
+      h += '<div class="proc-icon">⚠️</div>';
+      h += '<div class="proc-body">';
+      h += '<div class="proc-title">轉檔失敗</div>';
+      if (m.processingError) h += '<div class="proc-err">' + escapeHtml(m.processingError) + '</div>';
+      h += '<div class="proc-sub">在 Notion 刪掉這筆 → 回首頁重新按處理即可重試</div>';
+      h += '</div></div>';
+    }
+
     // Header（電腦版會放在 grid 頂端 full-width，手機版正常 flow）
     h += '<div class="meeting-header">';
     h += '<div class="meeting-title">' + escapeHtml(m.topic || '(未命名)') + '</div>';

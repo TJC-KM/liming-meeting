@@ -136,10 +136,55 @@ export default {
         if (!payload.date && !payload.fileId && request.method === 'POST') {
           try { payload = await request.json(); } catch (e) { /* 留空 query params */ }
         }
-        // fire-and-forget：cron 本來就 ctx.waitUntil，手動 HTTP 也對齊，避免 sync await 撞 worker request 上限
-        // 客戶端不再拿 processAudio 結果，靠 polling Notion 看是否完成
-        ctx.waitUntil(processAudio(env, payload).catch(e => console.error('[processAudio bg]', e.message)));
-        return cors(json({ success: true, queued: true }), origin);
+        // === Placeholder pattern ===
+        // 1. 同步：resolve fileId → dedup → 建 Notion placeholder（狀態=處理中）
+        // 2. 回 notionId 給前端立刻 redirect
+        // 3. 背景：跑 processAudio，整路 update 該 page 的狀態（下載中 / AI 分析中 / 整合中 / 寫入內容 / 草稿）
+        //    失敗則 markPageFailed 寫入錯誤訊息
+        try {
+          let fileId = payload.fileId;
+          // 沒 fileId 就用 date+type 找
+          if (!fileId && payload.date && payload.type) {
+            const year = parseInt(payload.date.substring(0, 4), 10);
+            const month = parseInt(payload.date.substring(5, 7), 10);
+            const list = await listDriveFiles(env, year, month);
+            const match = list.files.find(f => f.date === payload.date && f.type === payload.type);
+            if (!match) return cors(json({ success: false, error: `找不到對應錄音：${payload.date} ${payload.type}` }, 404), origin);
+            fileId = match.id;
+            payload.fileId = fileId;
+          }
+          if (!fileId) return cors(json({ success: false, error: '需要 fileId 或 (date + type)' }, 400), origin);
+
+          // dedup：fileId 已處理過 → 回既有 notionId 給前端跳過去
+          const existing = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
+            method: 'POST',
+            body: JSON.stringify({ filter: { property: '錄音檔連結', url: { contains: fileId } }, page_size: 1 }),
+          }).catch(() => ({ results: [] }));
+          if (existing.results && existing.results.length > 0) {
+            return cors(json({ success: true, queued: false, notionId: existing.results[0].id, alreadyDone: true }), origin);
+          }
+
+          // 解析檔名 → 建 placeholder
+          const fileMeta = await getDriveFileMeta(env, fileId);
+          const parsed = parseFilename(fileMeta.name, fileMeta.createdTime);
+          if (!parsed || !parsed.type) {
+            return cors(json({ success: false, error: `檔名格式錯誤或無法判斷類型：${fileMeta.name}` }, 400), origin);
+          }
+          const audioUrl = `https://drive.google.com/file/d/${fileId}/view`;
+          const pageId = await createPlaceholderNotionPage(env, parsed, audioUrl);
+
+          // 背景跑 + 失敗 markPageFailed
+          ctx.waitUntil(
+            processAudio(env, payload, pageId).catch(async (e) => {
+              console.error('[processAudio bg]', e.message);
+              await markPageFailed(env, pageId, e.message).catch(() => {});
+            })
+          );
+          return cors(json({ success: true, queued: true, notionId: pageId }), origin);
+        } catch (e) {
+          console.error('[/drive/process prelude]', e.message);
+          return cors(json({ success: false, error: e.message }, 500), origin);
+        }
       }
 
       // -- Root --
@@ -941,6 +986,109 @@ async function notionAppendChildrenBatched(env, pageId, blocks) {
   }
 }
 
+// === Placeholder pattern：先建 Notion page、整路 update status，前端可即時看進度 ===
+
+// 建立 placeholder Notion page（屬性都填好，無內文 blocks），回傳 pageId
+// status 從 '處理中' 開始，背景任務再 update 到各階段
+async function createPlaceholderNotionPage(env, parsed, audioUrl) {
+  const properties = {
+    '聚會主題': { title: chunkRichText(parsed.topic || '(未命名)') },
+    '聚會日期': { date: { start: parsed.isoDate } },
+    '聚會類型': { select: { name: parsed.type } },
+    '狀態': { select: { name: '處理中' } },
+  };
+  if (parsed.speaker) properties['講員'] = { rich_text: chunkRichText(parsed.speaker) };
+  if (audioUrl) properties['錄音檔連結'] = { url: audioUrl };
+
+  const data = await notionFetch(env, '/pages', {
+    method: 'POST',
+    body: JSON.stringify({
+      parent: { database_id: env.NOTION_DATABASE_ID },
+      properties,
+    }),
+  });
+  console.log(`[placeholder] 建立 ${data.id.substring(0,8)} (${parsed.topic})`);
+  return data.id;
+}
+
+// 更新 page 的「狀態」屬性（背景任務各階段呼叫）
+// 失敗不拋（status 更新失敗不該整個流程死掉）
+async function updatePageStatus(env, pageId, status) {
+  try {
+    await notionFetch(env, `/pages/${pageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        properties: { '狀態': { select: { name: status } } },
+      }),
+    });
+    console.log(`[status] ${pageId.substring(0,8)} → ${status}`);
+  } catch (e) {
+    console.warn(`[status] ${pageId.substring(0,8)} → ${status} 失敗: ${e.message}`);
+  }
+}
+
+// 標記失敗：狀態 = '失敗' + 處理錯誤 = 訊息
+// 若 schema 沒「處理錯誤」屬性，退而求其次只 update 狀態
+async function markPageFailed(env, pageId, errorMsg) {
+  const msg = String(errorMsg || '').substring(0, 1500);
+  try {
+    await notionFetch(env, `/pages/${pageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        properties: {
+          '狀態': { select: { name: '失敗' } },
+          '處理錯誤': { rich_text: chunkRichText(msg) },
+        },
+      }),
+    });
+    console.log(`[failed] ${pageId.substring(0,8)}: ${msg.substring(0,80)}`);
+  } catch (e) {
+    // 「處理錯誤」屬性可能不存在 → 退而求其次只更新狀態
+    if (/處理錯誤|property is not valid|Could not find property/i.test(e.message)) {
+      console.warn(`[failed] 無「處理錯誤」屬性，只更新狀態: ${e.message}`);
+      await updatePageStatus(env, pageId, '失敗');
+    } else {
+      console.warn(`[failed] ${pageId.substring(0,8)} mark 失敗: ${e.message}`);
+    }
+  }
+}
+
+// 補上內文 + 最終屬性（簡易重點、轉檔時間、狀態=草稿），placeholder pattern 的收尾
+async function finalizePageWithContent(env, pageId, markdown, processingInfo) {
+  const summary = extractSummaryFromMarkdown(markdown);
+  const allChildren = markdownToNotionBlocks(markdown);
+
+  // 1. append content blocks 分批
+  await notionAppendChildrenBatched(env, pageId, allChildren);
+
+  // 2. update final properties
+  const props = {
+    '狀態': { select: { name: '草稿' } },
+  };
+  if (summary) props['簡易重點'] = { rich_text: chunkRichText(summary) };
+  if (processingInfo) {
+    props['轉檔時間'] = { date: { start: processingInfo.processedAt.toISOString() } };
+    props['轉檔耗時'] = { rich_text: chunkRichText(formatDuration(processingInfo.elapsedSec)) };
+  }
+  try {
+    await notionFetch(env, `/pages/${pageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ properties: props }),
+    });
+  } catch (e) {
+    // 若是缺欄位，去掉時間欄位重試
+    if (/轉檔時間|轉檔耗時|property is not valid|Could not find property/i.test(e.message)) {
+      delete props['轉檔時間'];
+      delete props['轉檔耗時'];
+      await notionFetch(env, `/pages/${pageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ properties: props }),
+      });
+    } else throw e;
+  }
+  console.log(`[finalize] ${pageId.substring(0,8)} → 草稿 (${allChildren.length} blocks)`);
+}
+
 async function listMeetings(env) {
   const body = { sorts: [{ property: '聚會日期', direction: 'descending' }], page_size: 100 };
   let allResults = [];
@@ -1018,6 +1166,7 @@ function transformPage(page) {
     audioUrl: p['錄音檔連結']?.url || null,
     studyUrl: p['預查資料連結']?.url || null,
     attachmentUrl: p['附件資料夾']?.url || null,
+    processingError: getRichText(p['處理錯誤']),
     createdTime: page.created_time || null,
     lastEditedTime: page.last_edited_time || null,
   };
@@ -1886,10 +2035,13 @@ async function listAllAudioCandidates(env) {
   return candidates;
 }
 
-async function processAudio(env, payload) {
+// pageId（optional）：placeholder pattern — 若給，全程 update 該 page 的狀態，最後 finalizePageWithContent；
+//   未給：legacy 模式，最後 createNotionPage 建新 page（給 cron 等沒走 placeholder 的呼叫者）
+async function processAudio(env, payload, pageId) {
   const t0 = Date.now();
   let fileId = payload.fileId;
   let fileMeta;
+  const setStatus = async (s) => { if (pageId) await updatePageStatus(env, pageId, s); };
 
   // 短檔案 ID 當 log 前綴，方便多筆並行時對齊
   const mark = (id) => `[${(id || '?').substring(0, 8)}]`;
@@ -1976,6 +2128,7 @@ async function processAudio(env, payload) {
       let brain1;
       stepStart = Date.now();
       {
+        await setStatus('AI 分析中（前半）');
         console.log(`${m} 4a. 下載前半 0~${halfBytes-1} (${(halfBytes/1024/1024).toFixed(1)}MB)...`);
         const t1d = Date.now();
         const part1 = await downloadDriveFilePart(env, fileId, 0, halfBytes - 1);
@@ -1990,6 +2143,7 @@ async function processAudio(env, payload) {
       // Step 2: 後半 Range download + brain dump
       let brain2;
       {
+        await setStatus('AI 分析中（後半）');
         const startByte = fileSize - halfBytes;
         console.log(`${m} 4b. 下載後半 ${startByte}~${fileSize-1} (${(halfBytes/1024/1024).toFixed(1)}MB)...`);
         const t2d = Date.now();
@@ -2003,6 +2157,7 @@ async function processAudio(env, payload) {
       }
 
       // Step 3: 純文字整合（meetingInfo 也帶進去，讓整合階段知道聚會性質）
+      await setStatus('整合中');
       const t3 = Date.now();
       console.log(`${m} 4c. Gemini 整合兩段為最終格式（純文字）...`);
       const combinedInput = `${meetingInfo}\n\n【前半段要點】\n\n${brain1}\n\n---\n\n【後半段要點】\n\n${brain2}`;
@@ -2014,12 +2169,14 @@ async function processAudio(env, payload) {
       console.log(`${m} 4. 切割流程總耗時 ${(stepTimes.gemini/1000).toFixed(1)}s (含 3 次 Gemini call)`);
     } else {
       // 小檔：整顆下載
+      await setStatus('下載中');
       stepStart = Date.now();
       console.log(`${m} 3. 小檔，整顆下載中...`);
       const audioBytes = await downloadDriveFile(env, fileId);
       stepTimes.download = Date.now() - stepStart;
       console.log(`${m} 3. 下載完成 ${(audioBytes.byteLength / 1024 / 1024).toFixed(1)}MB — ${(stepTimes.download / 1000).toFixed(1)}s`);
 
+      await setStatus('AI 分析中');
       stepStart = Date.now();
       console.log(`${m} 4. 呼叫 Gemini...`);
       markdown = await geminiAnalyze(env, audioBytes, mimeType, fileMeta.name, meetingInfo);
@@ -2028,21 +2185,31 @@ async function processAudio(env, payload) {
     }
 
     // === Step 5: 寫入 Notion ===
+    await setStatus('寫入內容');
     stepStart = Date.now();
     console.log(`${m} 5. 寫入 Notion...`);
     const audioUrl = `https://drive.google.com/file/d/${fileId}/view`;
     const totalMs = Date.now() - t0;
     const processingInfo = { processedAt: new Date(), elapsedSec: Math.round(totalMs / 1000) };
-    const notionId = await createNotionPage(env, markdown, parsed, audioUrl, processingInfo);
+
+    let finalNotionId;
+    if (pageId) {
+      // placeholder pattern：補上內文 + 最終屬性，狀態設為「草稿」
+      await finalizePageWithContent(env, pageId, markdown, processingInfo);
+      finalNotionId = pageId;
+    } else {
+      // legacy：建立新 page（例如 cron path 沒走 placeholder）
+      finalNotionId = await createNotionPage(env, markdown, parsed, audioUrl, processingInfo);
+    }
     stepTimes.notion = Date.now() - stepStart;
-    console.log(`${m} 5. Notion 建立：${notionId} — ${stepTimes.notion}ms`);
+    console.log(`${m} 5. Notion ${pageId ? '更新' : '建立'}：${finalNotionId} — ${stepTimes.notion}ms`);
 
     const totalSec = Math.round(totalMs / 1000);
     console.log(`${m} ✓ 完成 ${fileMeta.name} | 總耗時 ${totalSec}s | 步驟ms: ${JSON.stringify(stepTimes)}`);
 
     return {
       success: true,
-      notionId,
+      notionId: finalNotionId,
       topic: parsed.topic,
       speaker: parsed.speaker,
       date: parsed.isoDate,

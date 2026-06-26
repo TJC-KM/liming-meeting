@@ -1007,14 +1007,23 @@ async function handleProcess(date, type, fileId) {
   startProcessingTicker();
   startCompletionPolling();
 
-  // 發 Worker 請求（不 await，keepalive 確保離開頁面仍會送出）
-  // 傳 fileId 為主，避免 worker 用 date+type 找又中第一場
-  gasApi.process(date, type, fid)
-    .then(r => console.log('[process] worker 完成', r))
-    .catch(e => console.warn('[process] worker 失敗', e.message));
+  // 發 Worker 請求 → 等 notionId 回來（worker 同步建 placeholder Notion page、回 id 後背景跑 Gemini）
+  // 拿到 notionId 後直接跳 meeting.html?id=X，meeting 頁 poll Notion 即時看狀態
+  try {
+    const r = await gasApi.process(date, type, fid);
+    console.log('[process] worker 回應', r);
+    if (r && r.notionId) {
+      const qp2 = new URLSearchParams({ id: r.notionId });
+      if (state.theme !== 'adult') qp2.set('theme', state.theme);
+      location.href = 'meeting.html?' + qp2.toString();
+      return;
+    }
+    // 沒拿到 notionId（網路超時等）→ fallback 走舊路徑
+  } catch (e) {
+    console.warn('[process] worker 失敗，fallback 走舊 URL', e.message);
+  }
 
-  // 立刻跳到 meeting.html 等待模式
-  // audioFileId 讓 meeting 頁能在 Notion 寫入前就提供播放/下載/心得功能
+  // Fallback：worker 沒回 notionId（網路超時或非預期）→ 走 date+type 等舊參數
   const qp = new URLSearchParams({
     date: date,
     type: type,
