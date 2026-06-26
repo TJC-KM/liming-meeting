@@ -1,0 +1,34 @@
+name = "church-meeting-api"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+account_id = "8e2eb47cb86e3cfb953c89dd148b6137"
+
+[vars]
+GEMINI_MODEL = "gemini-flash-latest"
+CONFIG_SHEET_ID = "1F7fP03oexK4lrerV-hRHM1ooKirwZnuguCerGK6jogo"
+
+# 排程：每天 12:30 + 21:30 Asia/Taipei（UTC 04:30 + 13:30）
+# 每次最多處理 QUOTA_PER_RUN 筆（預設 5，free tier 50 subrequest 限制）
+# 兩次合起來一天約 10 筆，符合 Gemini 配額與穩定性平衡
+# Cron 格式：minute hour day-of-month month day-of-week（時間都是 UTC）
+[triggers]
+crons = ["30 4 * * *", "30 13 * * *"]
+
+# 可選環境變數：
+#   QUOTA_PER_RUN = "5"  # 每次 cron 最多處理幾筆（手動改值不必重新部署，從 Dashboard 設）
+
+# 啟用 Workers Logs（持久化 log，可在 Dashboard → Observability → Logs 查詢）
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+# Secrets（不寫在這裡，用 Dashboard 或以下指令設定）：
+#   npx wrangler secret put SERVICE_ACCOUNT_KEY
+#   npx wrangler secret put NOTION_TOKEN
+#   npx wrangler secret put NOTION_DATABASE_ID
+#   npx wrangler secret put GEMINI_API_KEY
+#   npx wrangler secret put DRIVE_FOLDER_ID
+#
+# 也可選填限制 CORS 來源：
+#   npx wrangler secret put ALLOWED_ORIGIN
