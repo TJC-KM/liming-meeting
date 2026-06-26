@@ -659,7 +659,7 @@ async function getConfigValue(env, key, fallback) {
 //   attempt: 內部 retry 計數（503/overloaded 自動重試 1 次，避免瞬間過載害整個流程死）
 async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, promptOverride, attempt) {
   attempt = attempt || 1;
-  const MAX_ATTEMPTS = 2;  // 1 次 retry。音檔 retry 比文字貴（要重新上傳），保守設 2
+  const MAX_ATTEMPTS = 3;  // 2 次 retry。對齊 geminiAnalyzeText，最大化 503 自救機率
   const apiKey = env.GEMINI_API_KEY;
   const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
   // Config Sheet 可覆寫 prompt / system
@@ -699,17 +699,19 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
     throw new Error('Gemini 上傳失敗：' + JSON.stringify(upData).substring(0, 500));
   }
 
-  // 2. 等待 ACTIVE（free tier 省 subrequest：3 次 polling，每次間隔 2 秒，共 6 秒）
-  // 大檔可能撈不到 ACTIVE，整體流程的 retry 機制兜底
+  // 2. 等待 ACTIVE：6 次 polling + 漸進式間隔（2s/3s/4s/5s/6s/7s = 累積 27 秒）
+  // 比原本 2s×3=6s 寬鬆很多，但保留 subrequest 額度（最多 6 個）
+  // 大檔 / Gemini Files API 慢時也能等到
   let state = upData.file.state || 'PROCESSING';
-  for (let i = 0; i < 3 && state !== 'ACTIVE'; i++) {
-    await new Promise(r => setTimeout(r, 2000));
+  const waits = [2000, 3000, 4000, 5000, 6000, 7000];
+  for (let i = 0; i < waits.length && state !== 'ACTIVE'; i++) {
+    await new Promise(r => setTimeout(r, waits[i]));
     const chk = await fetch(`${GEMINI_BASE}/${upData.file.name}?key=${apiKey}`);
     const chkData = await chk.json();
     state = chkData.state;
     if (state === 'FAILED') throw new Error('Gemini 檔案處理失敗');
   }
-  if (state !== 'ACTIVE') throw new Error('Gemini 檔案 ACTIVE 等待超時，請稍後再試');
+  if (state !== 'ACTIVE') throw new Error('Gemini 檔案 ACTIVE 等待超時（27 秒），請稍後再試');
 
   // 3. generateContent — 不重試、不 fallback，失敗就直接拋（讓使用者手動重試）
   const genRes = await fetch(
@@ -739,7 +741,7 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
     const rawMsg = genData?.error?.message || '無回應';
     const isTransient = /high demand|overloaded|unavailable|429|503/i.test(rawMsg);
     if (isTransient && attempt < MAX_ATTEMPTS) {
-      const waitMs = attempt * 4000;  // 4s（attempt=1）
+      const waitMs = attempt * 4000;  // 4s, 8s（attempt=1, 2）
       console.warn(`[Gemini-audio] 忙線中（${rawMsg.substring(0,80)}），${waitMs/1000}s 後重試 (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
       await new Promise(r => setTimeout(r, waitMs));
       return geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, promptOverride, attempt + 1);
