@@ -656,7 +656,10 @@ async function getConfigValue(env, key, fallback) {
 // 可選參數：
 //   extraContext: prepend 到 user prompt 之前（特殊指示）
 //   promptOverride: 完全替代從 Config 拿的 gemini_prompt（用於 split brain-dump 步驟）
-async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, promptOverride) {
+//   attempt: 內部 retry 計數（503/overloaded 自動重試 1 次，避免瞬間過載害整個流程死）
+async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, promptOverride, attempt) {
+  attempt = attempt || 1;
+  const MAX_ATTEMPTS = 2;  // 1 次 retry。音檔 retry 比文字貴（要重新上傳），保守設 2
   const apiKey = env.GEMINI_API_KEY;
   const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
   // Config Sheet 可覆寫 prompt / system
@@ -734,9 +737,14 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
 
   if (!genData?.candidates) {
     const rawMsg = genData?.error?.message || '無回應';
-    if (/high demand|overloaded|unavailable|429|503/i.test(rawMsg)) {
-      throw new Error('Gemini AI 目前忙線中，請稍後再試');
+    const isTransient = /high demand|overloaded|unavailable|429|503/i.test(rawMsg);
+    if (isTransient && attempt < MAX_ATTEMPTS) {
+      const waitMs = attempt * 4000;  // 4s（attempt=1）
+      console.warn(`[Gemini-audio] 忙線中（${rawMsg.substring(0,80)}），${waitMs/1000}s 後重試 (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+      await new Promise(r => setTimeout(r, waitMs));
+      return geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, promptOverride, attempt + 1);
     }
+    if (isTransient) throw new Error('Gemini AI 目前忙線中，請稍後再試（已重試 ' + MAX_ATTEMPTS + ' 次）');
     if (/quota|RESOURCE_EXHAUSTED|exceeded/i.test(rawMsg)) {
       throw new Error('Gemini 今日配額用完，請明天再試');
     }
