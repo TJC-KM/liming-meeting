@@ -4,7 +4,8 @@ compatibility_date = "2024-09-01"
 account_id = "8e2eb47cb86e3cfb953c89dd148b6137"
 
 [vars]
-GEMINI_MODEL = "gemini-flash-latest"
+# 用寫死版本名稱避免 "*-latest" alias 偶爾指到區域沒部署的版本造成 503
+GEMINI_MODEL = "gemini-2.5-flash"
 CONFIG_SHEET_ID = "1F7fP03oexK4lrerV-hRHM1ooKirwZnuguCerGK6jogo"
 # Free tier 限 50 subrequest/invocation：每檔處理用 ~25 個 subrequest + cron 預載 ~8 個 ≈ 33
 # 第 2 個檔就會爆「Too many subrequests」→ 一次 cron 只跑 1 個檔

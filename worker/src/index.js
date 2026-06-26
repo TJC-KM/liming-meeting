@@ -659,7 +659,9 @@ async function getConfigValue(env, key, fallback) {
 //   attempt: 內部 retry 計數（503/overloaded 自動重試 1 次，避免瞬間過載害整個流程死）
 async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, promptOverride, attempt) {
   attempt = attempt || 1;
-  const MAX_ATTEMPTS = 3;  // 2 次 retry。對齊 geminiAnalyzeText，最大化 503 自救機率
+  const MAX_ATTEMPTS = 2;  // 1 次 retry。改回 2（從 3 降回）—— Free tier waitUntil 時限有限，
+                            // 連續失敗時 3 attempts 會跑超過 90s 被 CF kill → placeholder 卡死
+                            // 寧可 markFailed 給使用者看到 + 按重試鈕，也不要卡死
   const apiKey = env.GEMINI_API_KEY;
   const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
   // Config Sheet 可覆寫 prompt / system
@@ -739,21 +741,25 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
 
   if (!genData?.candidates) {
     const rawMsg = genData?.error?.message || '無回應';
+    const errCode = genData?.error?.code || genRes.status;
+    const errStatus = genData?.error?.status || '';
+    // 完整 log（不再 substring(0,80)）讓 debug 看到全部訊息 + HTTP code
+    console.warn(`[Gemini-audio] HTTP ${errCode} ${errStatus} model=${model}: ${rawMsg}`);
     const isTransient = /high demand|overloaded|unavailable|429|503/i.test(rawMsg);
     if (isTransient && attempt < MAX_ATTEMPTS) {
-      const waitMs = attempt * 4000;  // 4s, 8s（attempt=1, 2）
-      console.warn(`[Gemini-audio] 忙線中（${rawMsg.substring(0,80)}），${waitMs/1000}s 後重試 (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+      const waitMs = attempt * 4000;  // 4s（attempt=1）
+      console.warn(`[Gemini-audio] ${waitMs/1000}s 後重試 (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
       await new Promise(r => setTimeout(r, waitMs));
       return geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, promptOverride, attempt + 1);
     }
-    if (isTransient) throw new Error('Gemini AI 目前忙線中，請稍後再試（已重試 ' + MAX_ATTEMPTS + ' 次）');
+    if (isTransient) throw new Error(`Gemini AI 忙線中（${errCode}）—— 已重試 ${MAX_ATTEMPTS} 次仍失敗`);
     if (/quota|RESOURCE_EXHAUSTED|exceeded/i.test(rawMsg)) {
       throw new Error('Gemini 今日配額用完，請明天再試');
     }
     if (/api key|API_KEY|permission/i.test(rawMsg)) {
       throw new Error('Gemini API Key 無效或權限不足');
     }
-    throw new Error('Gemini 生成失敗：' + rawMsg);
+    throw new Error(`Gemini 生成失敗 (HTTP ${errCode}): ${rawMsg}`);
   }
   const usedModel = model;
 
