@@ -368,8 +368,16 @@ function attachEntries(days) {
   });
 
   // Layer 3：Study 預查 → 已有同 topic 就合併，否則新增 pending-study
+  // 先建立已在 Notion 的 fileId 集合，避免已轉檔的檔案在估計日期再出現一次
+  const notionStudyFileIds = new Set(
+    state.notionMeetings.filter(m => m.studyUrl).map(m => {
+      const match = m.studyUrl.match(/\/d\/([^/]+)/);
+      return match ? match[1] : null;
+    }).filter(Boolean)
+  );
   state.studyDocs.forEach(function (doc) {
     if (!doc.estimatedDate || !doc.topic) return;
+    if (notionStudyFileIds.has(doc.id)) return;
     const parts = doc.estimatedDate.split('-').map(Number);
     const dayObj = findDay(days, parts[0], parts[1], parts[2]);
     if (!dayObj) return;
