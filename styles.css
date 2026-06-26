@@ -260,6 +260,7 @@ html.dark .tx-brown{color:#bfa094}html.dark .tx-yellow{color:#fbbf24}html.dark .
 /* === 處理進度 / 失敗 banner（placeholder pattern UX） === */
 .proc-banner{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:var(--radius-lg);margin-bottom:14px;border:1px solid}
 .proc-banner-running{background:#e8f4fd;border-color:#4a90d9;color:#1a3a5c}
+.proc-banner-retry{background:#fff4e0;border-color:#e0900a;color:#5c3a00}
 .proc-banner-failed{background:#fdecea;border-color:#d9534f;color:#5c1a1a}
 .proc-spinner{width:24px;height:24px;border:3px solid #b3d4fc;border-top-color:#1a73e8;border-radius:50%;animation:procSpin 0.9s linear infinite;flex-shrink:0}
 @keyframes procSpin{to{transform:rotate(360deg)}}
@@ -273,6 +274,7 @@ html.dark .tx-brown{color:#bfa094}html.dark .tx-yellow{color:#fbbf24}html.dark .
 .proc-retry-btn:disabled{opacity:.5;cursor:not-allowed}
 .badge-failed{background:#fdecea;color:#a02622;border:1px solid #d9534f}
 html.dark .proc-banner-running{background:#0d2840;border-color:#3a6da1;color:#cce4ff}
+html.dark .proc-banner-retry{background:#2e2206;border-color:#9c6c10;color:#ffe0a3}
 html.dark .proc-banner-failed{background:#3a0e0e;border-color:#a04040;color:#ffcccc}
 html.dark .proc-err{background:#1a0808;color:#ffaaaa}
 html.dark .badge-failed{background:#3a0e0e;color:#ffaaaa;border-color:#a04040}

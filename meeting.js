@@ -36,10 +36,12 @@
     document.getElementById('root').innerHTML = '<div class="empty">缺少聚會 ID 或 date+type</div>';
   }
 
-  // 狀態屬於「處理中」的字串（worker 各階段會 update）→ 需 polling
+  // 狀態屬於「處理中」的字串（worker 各階段會 update）→ 需 5 秒快輪詢
   var PROCESSING_STATUSES = ['處理中', '下載中', 'AI 分析中', 'AI 分析中（前半）', 'AI 分析中（後半）', '整合中', '寫入內容'];
   var _statusPoll = null;
   function isProcessingStatus(s) { return s && PROCESSING_STATUSES.indexOf(s) >= 0; }
+  // 「待重試 N/3」→ cron 之後才會重跑（最多 6 小時），用 60 秒慢輪詢
+  function isRetryStatus(s) { return /^待重試\s*\d+\/\d+/.test(String(s || '')); }
 
   function loadById(theId) {
     api.getMeeting(theId)
@@ -47,8 +49,9 @@
         document.title = (m.topic || '聚會紀錄') + ' - 教會聚會紀錄';
         document.getElementById('root').innerHTML = renderMeeting(m);
         bindActionButtons(m);
-        // 處理中狀態 → 啟動 5 秒 polling 直到狀態變終態
-        if (isProcessingStatus(m.status)) startStatusPolling(theId);
+        // 處理中 → 5 秒快輪詢；待重試 → 60 秒慢輪詢；其他（草稿/失敗）→ 停止
+        if (isProcessingStatus(m.status)) startStatusPolling(theId, 5000);
+        else if (isRetryStatus(m.status)) startStatusPolling(theId, 60000);
         else stopStatusPolling();
       })
       .catch(function (err) {
@@ -56,9 +59,9 @@
       });
   }
 
-  function startStatusPolling(theId) {
+  function startStatusPolling(theId, intervalMs) {
     stopStatusPolling();
-    _statusPoll = setInterval(function () { loadById(theId); }, 5000);
+    _statusPoll = setInterval(function () { loadById(theId); }, intervalMs || 5000);
   }
   function stopStatusPolling() {
     if (_statusPoll) { clearInterval(_statusPoll); _statusPoll = null; }
@@ -400,6 +403,22 @@
       h += '<div class="proc-body">';
       h += '<div class="proc-title">📡 處理中：' + escapeHtml(m.status) + '</div>';
       h += '<div class="proc-sub">頁面 5 秒自動更新一次，請稍候（大檔可能 2-3 分鐘）</div>';
+      h += '</div></div>';
+    }
+    // 待重試 banner：橘色，告訴使用者系統會自動重試、可關頁
+    else if (isRetryStatus(m.status)) {
+      h += '<div class="proc-banner proc-banner-retry">';
+      h += '<div class="proc-icon">⏳</div>';
+      h += '<div class="proc-body">';
+      h += '<div class="proc-title">已排入自動重試佇列（' + escapeHtml(m.status) + '）</div>';
+      h += '<div class="proc-sub">AI 服務當下忙線，系統會在背景自動再試（最晚數小時內）。<strong>你可以關閉此頁</strong>，稍後再回來看，或按下方立即重試。</div>';
+      if (m.processingError) h += '<div class="proc-err">' + escapeHtml(m.processingError) + '</div>';
+      var rfid = '';
+      if (m.audioUrl) { var rm = m.audioUrl.match(/\/d\/([^\/]+)/); if (rm) rfid = rm[1]; }
+      if (rfid) {
+        var rdate = (m.date || '').substring(0, 10);
+        h += '<button type="button" id="retryBtn" class="proc-retry-btn" data-fileid="' + escapeAttr(rfid) + '" data-date="' + escapeAttr(rdate) + '" data-type="' + escapeAttr(m.type || '') + '">🔁 立即重試</button>';
+      }
       h += '</div></div>';
     }
     // 失敗 banner：紅色，顯示錯誤訊息 + 重試按鈕

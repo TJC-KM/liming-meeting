@@ -156,22 +156,23 @@ export default {
           if (!fileId) return cors(json({ success: false, error: '需要 fileId 或 (date + type)' }, 400), origin);
 
           // dedup：fileId 已處理過 → 看狀態決定
-          //   - '失敗' → 自動 archive，繼續往下建新 placeholder（等於原地重試，使用者不用手動刪）
-          //   - 其他狀態 → 回既有 notionId 給前端跳過去
+          //   - '失敗' / '待重試 N/3' → 可重建：archive 舊的，往下建新 placeholder（手動立即重試）
+          //   - 其他狀態（處理中 / 草稿 / 已發布…）→ 回既有 notionId 給前端跳過去
           const existing = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
             method: 'POST',
             body: JSON.stringify({ filter: { property: '錄音檔連結', url: { contains: fileId } }, page_size: 5 }),
           }).catch(() => ({ results: [] }));
+          const isRetryable = (s) => s === '失敗' || /^待重試/.test(String(s || ''));
           if (existing.results && existing.results.length > 0) {
-            // 找第一個「非失敗」的 entry → 直接回那個
-            const live = existing.results.find(p => (p.properties?.['狀態']?.select?.name) !== '失敗');
+            // 找第一個「非可重建」的 entry（= 真的在跑 or 已完成）→ 直接回那個
+            const live = existing.results.find(p => !isRetryable(p.properties?.['狀態']?.select?.name));
             if (live) {
               return cors(json({ success: true, queued: false, notionId: live.id, alreadyDone: true }), origin);
             }
-            // 全部都是失敗的 → archive 它們，繼續建新 placeholder（重試）
-            for (const failed of existing.results) {
-              try { await archiveNotionPage(env, failed.id); console.log(`[retry] archive 失敗 entry ${failed.id.substring(0,8)}`); }
-              catch (e) { console.warn(`[retry] archive ${failed.id} 失敗: ${e.message}`); }
+            // 全部都是失敗/待重試 → archive 它們，繼續建新 placeholder（重試）
+            for (const old of existing.results) {
+              try { await archiveNotionPage(env, old.id); console.log(`[retry] archive 重建 entry ${old.id.substring(0,8)}`); }
+              catch (e) { console.warn(`[retry] archive ${old.id} 失敗: ${e.message}`); }
             }
           }
 
@@ -184,11 +185,11 @@ export default {
           const audioUrl = `https://drive.google.com/file/d/${fileId}/view`;
           const pageId = await createPlaceholderNotionPage(env, parsed, audioUrl);
 
-          // 背景跑 + 失敗 markPageFailed
+          // 背景跑 fail-fast；失敗 → 標「待重試 1/3」（cron 之後用全新 invocation 重跑）
           ctx.waitUntil(
             processAudio(env, payload, pageId).catch(async (e) => {
               console.error('[processAudio bg]', e.message);
-              await markPageFailed(env, pageId, e.message).catch(() => {});
+              await markForRetry(env, pageId, 1, e.message).catch(() => {});
             })
           );
           return cors(json({ success: true, queued: true, notionId: pageId }), origin);
@@ -659,9 +660,10 @@ async function getConfigValue(env, key, fallback) {
 //   attempt: 內部 retry 計數（503/overloaded 自動重試 1 次，避免瞬間過載害整個流程死）
 async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, promptOverride, attempt) {
   attempt = attempt || 1;
-  const MAX_ATTEMPTS = 2;  // 1 次 retry。改回 2（從 3 降回）—— Free tier waitUntil 時限有限，
-                            // 連續失敗時 3 attempts 會跑超過 90s 被 CF kill → placeholder 卡死
-                            // 寧可 markFailed 給使用者看到 + 按重試鈕，也不要卡死
+  const MAX_ATTEMPTS = 1;  // ⭐ fail-fast，不在同一次背景任務內 retry。
+                            // Gemini 過載通常持續數分鐘，原地等 4s 重試幾乎救不回來，
+                            // 反而堆疊時間害 waitUntil 被 CF kill → placeholder 卡死。
+                            // 改由 cron sweeper 用「全新 invocation」重跑（全新時間 + subrequest 預算）。
   const apiKey = env.GEMINI_API_KEY;
   const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
   // Config Sheet 可覆寫 prompt / system
@@ -783,7 +785,8 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
 
 // 純文字 Gemini 呼叫（無音檔上傳）
 // 用於 3-step split pipeline 的 Step 3：拿兩段 brain dump 整合成最終 markdown
-// 503/overloaded 自動 retry（最多 3 次，等待 4s / 8s）— 避免前面花 100+ 秒的 brain dump 被最後一刀白費
+// ⭐ fail-fast：不在同一次背景任務內 retry（merge 發生在 ~140s 後，再 retry 會撞 waitUntil kill）。
+//    失敗交給 cron sweeper 用全新 invocation 重跑整條 pipeline。
 async function geminiAnalyzeText(env, prompt, textInput, attempt) {
   attempt = attempt || 1;
   const apiKey = env.GEMINI_API_KEY;
@@ -817,15 +820,11 @@ async function geminiAnalyzeText(env, prompt, textInput, attempt) {
 
   if (!genData?.candidates) {
     const rawMsg = genData?.error?.message || '無回應';
+    const errCode = genData?.error?.code || genRes.status;
+    console.warn(`[Gemini-text] HTTP ${errCode} model=${model}: ${rawMsg}`);
     const isTransient = /high demand|overloaded|unavailable|429|503/i.test(rawMsg);
-    if (isTransient && attempt < 3) {
-      const waitMs = attempt * 4000;  // 4s, 8s
-      console.warn(`[Gemini-text] 忙線中（${rawMsg.substring(0,80)}），${waitMs/1000}s 後重試 (attempt ${attempt + 1}/3)`);
-      await new Promise(r => setTimeout(r, waitMs));
-      return geminiAnalyzeText(env, prompt, textInput, attempt + 1);
-    }
-    if (isTransient) throw new Error('Gemini AI 目前忙線中，請稍後再試（已重試 3 次）');
-    throw new Error(`Gemini 生成失敗：${rawMsg.substring(0, 300)}`);
+    if (isTransient) throw new Error(`Gemini AI 忙線中（${errCode}）—— 整合階段失敗，將由 cron 自動重試`);
+    throw new Error(`Gemini 整合失敗 (HTTP ${errCode}): ${rawMsg.substring(0, 300)}`);
   }
 
   const cand = genData.candidates[0];
@@ -1077,6 +1076,47 @@ async function markPageFailed(env, pageId, errorMsg) {
       await updatePageStatus(env, pageId, '失敗');
     } else {
       console.warn(`[failed] ${pageId.substring(0,8)} mark 失敗: ${e.message}`);
+    }
+  }
+}
+
+// === 重試機制（cron sweeper 模式）===
+
+// 處理中（in-flight）狀態清單：cron sweeper 用來偵測「卡死」的 placeholder
+const IN_FLIGHT_STATUSES = ['處理中', '下載中', 'AI 分析中', 'AI 分析中（前半）', 'AI 分析中（後半）', '整合中', '寫入內容'];
+const MAX_PROCESS_ATTEMPTS = 3;  // 總共試 3 次（初始 1 + cron 重試 2），滿了標永久「失敗」
+
+// 從狀態字串解析已嘗試次數：「待重試 2/3」→ 2；in-flight 或其他 → 0
+function parseAttemptCount(status) {
+  const m = String(status || '').match(/待重試\s*(\d+)\/\d+/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+// 標記為「待重試 N/3」（cron 之後會撈來重跑）；滿 MAX_PROCESS_ATTEMPTS 則永久失敗
+// attemptsSoFar = 到目前為止已失敗的次數（含這次）
+async function markForRetry(env, pageId, attemptsSoFar, errorMsg) {
+  if (attemptsSoFar >= MAX_PROCESS_ATTEMPTS) {
+    console.log(`[retry] ${pageId.substring(0,8)} 已試 ${attemptsSoFar} 次 → 永久失敗`);
+    return markPageFailed(env, pageId, `已自動重試 ${MAX_PROCESS_ATTEMPTS} 次仍失敗。最後錯誤：${errorMsg}`);
+  }
+  const status = `待重試 ${attemptsSoFar}/${MAX_PROCESS_ATTEMPTS}`;
+  const msg = String(errorMsg || '').substring(0, 1500);
+  try {
+    await notionFetch(env, `/pages/${pageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        properties: {
+          '狀態': { select: { name: status } },
+          '處理錯誤': { rich_text: chunkRichText(msg) },
+        },
+      }),
+    });
+    console.log(`[retry] ${pageId.substring(0,8)} → ${status}: ${msg.substring(0,80)}`);
+  } catch (e) {
+    if (/處理錯誤|property is not valid|Could not find property/i.test(e.message)) {
+      await updatePageStatus(env, pageId, status);
+    } else {
+      console.warn(`[retry] ${pageId.substring(0,8)} mark 待重試失敗: ${e.message}`);
     }
   }
 }
@@ -1958,9 +1998,91 @@ async function handleStudySync(env, limit) {
 // - 優先順序：今天 createdTime > 今天 0:00 的檔 → 其他依檔名（日期）desc
 // - 已存在於 Notion 的（date+type 對應）自動跳過
 // - 失敗不算進 quota，下次 cron 會再試
+// cron sweeper：先清卡死、再重跑一個待重試項目
+// 回傳 true = 本輪 cron 已用掉預算做重試（呼叫端應跳過新檔處理，避免一次 invocation 做太多事爆 subrequest）
+async function sweepAndRetryOne(env) {
+  // 1. 偵測卡死：in-flight 狀態 + 最後編輯 >15 分鐘前 → 視為 waitUntil 被 CF kill，改標待重試
+  const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  try {
+    const stuck = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: {
+          and: [
+            { or: IN_FLIGHT_STATUSES.map(s => ({ property: '狀態', select: { equals: s } })) },
+            { timestamp: 'last_edited_time', last_edited_time: { before: cutoff } },
+          ],
+        },
+        page_size: 10,
+      }),
+    });
+    for (const p of (stuck.results || [])) {
+      // 卡死視為「已試 1 次」→ 待重試 1/3（之後正常計數接手）
+      await markForRetry(env, p.id, 1, 'placeholder 卡死（背景任務被 Cloudflare 中斷），已自動排入重試');
+    }
+    if (stuck.results && stuck.results.length) console.log(`[sweep] ${stuck.results.length} 筆卡死 → 待重試`);
+  } catch (e) {
+    console.warn('[sweep] 偵測卡死失敗:', e.message);
+  }
+
+  // 2. 撈最舊的一個待重試項目（1/3 或 2/3）
+  let retryPage;
+  try {
+    const q = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: { or: [
+          { property: '狀態', select: { equals: `待重試 1/${MAX_PROCESS_ATTEMPTS}` } },
+          { property: '狀態', select: { equals: `待重試 2/${MAX_PROCESS_ATTEMPTS}` } },
+        ] },
+        sorts: [{ timestamp: 'last_edited_time', direction: 'ascending' }],
+        page_size: 1,
+      }),
+    });
+    retryPage = (q.results || [])[0];
+  } catch (e) {
+    console.warn('[sweep] 撈待重試失敗:', e.message);
+    return false;
+  }
+  if (!retryPage) return false;  // 沒有待重試項目 → cron 去處理新檔
+
+  // 3. 重跑（這就是「全新 invocation 的全新預算」—— 跟原本失敗時是不同次 worker 執行）
+  const status = retryPage.properties?.['狀態']?.select?.name || '';
+  const attempts = parseAttemptCount(status);  // 已失敗次數
+  const audioUrl = retryPage.properties?.['錄音檔連結']?.url || '';
+  const fm = audioUrl.match(/\/d\/([^/]+)/);
+  if (!fm) {
+    console.warn(`[sweep] ${retryPage.id.substring(0,8)} 無 fileId → 永久失敗`);
+    await markPageFailed(env, retryPage.id, '無法取得錄音 fileId，無法重試');
+    return true;
+  }
+  const fileId = fm[1];
+  console.log(`[sweep] 重試 ${retryPage.id.substring(0,8)} (已失敗 ${attempts} 次) file=${fileId.substring(0,8)}`);
+  await updatePageStatus(env, retryPage.id, '處理中');  // 更新 last_edited + 讓前端看得到在跑
+  try {
+    await processAudio(env, { fileId }, retryPage.id);
+    console.log(`[sweep] ✓ 重試成功 ${retryPage.id.substring(0,8)}`);
+  } catch (e) {
+    console.error(`[sweep] ✗ 重試失敗 ${retryPage.id.substring(0,8)}: ${e.message}`);
+    await markForRetry(env, retryPage.id, attempts + 1, e.message);
+  }
+  return true;
+}
+
 async function runDailyProcess(env) {
   const QUOTA = parseInt(env.QUOTA_PER_RUN || '5', 10);
   console.log(`[daily] start at ${new Date().toISOString()}, quota=${QUOTA}`);
+
+  // ⭐ 優先處理重試：卡死清理 + 重跑一個待重試項目。有做重試就跳過新檔（一次 cron 只做一件重活）
+  try {
+    const didRetry = await sweepAndRetryOne(env);
+    if (didRetry) {
+      console.log('[daily] 本輪用於重試，跳過新檔處理');
+      return { mode: 'retry' };
+    }
+  } catch (e) {
+    console.warn('[daily] sweep 階段出錯，繼續處理新檔:', e.message);
+  }
 
   let candidates;
   try {
