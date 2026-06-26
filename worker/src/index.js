@@ -2088,14 +2088,16 @@ async function processAudio(env, payload, pageId) {
 - 主題：${parsed.topic || '（未提供）'}`;
 
     // === Step 2: Notion dedup check（用 fileId，不再用 date+type）===
+    // 注意：placeholder pattern 下 caller (route) 已經做過 dedup 才建 placeholder，這邊 skip 避免自撞
+    // （placeholder 內已填「錄音檔連結」，再 query 一次會撞到自己）
     stepStart = Date.now();
-    if (await isAudioAlreadyProcessed(env, fileId)) {
+    if (!pageId && await isAudioAlreadyProcessed(env, fileId)) {
       stepTimes.dedup = Date.now() - stepStart;
       console.log(`${m} ⏭ Notion 已有此 fileId 的紀錄 — skip`);
       return { success: false, error: 'Notion 已有此錄音的紀錄', topic: parsed.topic };
     }
     stepTimes.dedup = Date.now() - stepStart;
-    console.log(`${m} 2. dedup check OK — ${stepTimes.dedup}ms`);
+    console.log(`${m} 2. dedup check ${pageId ? '已由 caller 完成' : 'OK'} — ${stepTimes.dedup}ms`);
 
     // === Step 3: 決定切割策略（依 metadata size 判斷，先不下載）===
     const mimeType = fileMeta.mimeType || 'audio/mpeg';
