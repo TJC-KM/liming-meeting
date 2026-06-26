@@ -349,17 +349,19 @@ function attachEntries(days) {
     dayObj.items.push(Object.assign({}, m, { _state: 'filled' }));
   });
 
-  // Layer 2：Drive 錄音 → 已有同 topic 就合併，否則新增 pending
+  // Layer 2：Drive 錄音 → 已在 Notion 的 fileId 就跳過，否則新增 pending
+  const notionAudioFileIds = new Set(
+    state.notionMeetings.filter(m => m.audioUrl).map(m => {
+      const match = m.audioUrl.match(/\/d\/([^/]+)/);
+      return match ? match[1] : null;
+    }).filter(Boolean)
+  );
   state.driveFiles.forEach(function (f) {
     if (!f.date || !f.topic) return;
+    if (notionAudioFileIds.has(f.id)) return;
     const parts = f.date.split('-').map(Number);
     const dayObj = findDay(days, parts[0], parts[1], parts[2]);
     if (!dayObj) return;
-    const existing = dayObj.items.find(it => it.topic === f.topic);
-    if (existing) {
-      existing.driveFile = f;
-      return;
-    }
     dayObj.items.push({
       year: parts[0], month: parts[1], day: parts[2], dow: dayObj.dow,
       topic: f.topic, speaker: f.speaker, type: f.type,
