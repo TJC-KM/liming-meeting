@@ -732,7 +732,7 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
         }],
         generationConfig: {
           temperature: 0.3,
-          maxOutputTokens: 16384,  // 從 8192 加倍，避免被切斷；Gemini 跑得久一點但 sync mode 撐得住
+          maxOutputTokens: 12288,  // 中間值：比 16384 快、比 8192 不易被切斷。brain dump 用，merge 仍維持 16384
         },
       }),
     }
