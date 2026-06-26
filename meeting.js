@@ -90,6 +90,32 @@
     const shareBtn = document.getElementById('shareBtn');
     if (shareBtn) shareBtn.addEventListener('click', shareLink);
 
+    // 失敗 banner 的重試按鈕：自動 archive 此筆 + 重建 placeholder + 跳新頁
+    const retryBtn = document.getElementById('retryBtn');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', async function () {
+        const fid = retryBtn.dataset.fileid;
+        const dateStr = retryBtn.dataset.date;
+        const type = retryBtn.dataset.type;
+        retryBtn.disabled = true;
+        retryBtn.textContent = '處理中…';
+        try {
+          const r = await api.process(dateStr, type, fid);
+          if (r && r.notionId) {
+            location.href = 'meeting.html?id=' + encodeURIComponent(r.notionId);
+            return;
+          }
+          alert('重試失敗：worker 未回 notionId');
+          retryBtn.disabled = false;
+          retryBtn.textContent = '🔁 重試';
+        } catch (e) {
+          alert('重試失敗：' + e.message);
+          retryBtn.disabled = false;
+          retryBtn.textContent = '🔁 重試';
+        }
+      });
+    }
+
     const recId = getRecordingId(m);
     const commentsBtn = document.getElementById('commentsBtn');
     if (commentsBtn && recId) {
@@ -376,14 +402,25 @@
       h += '<div class="proc-sub">頁面 5 秒自動更新一次，請稍候（大檔可能 2-3 分鐘）</div>';
       h += '</div></div>';
     }
-    // 失敗 banner：紅色，顯示錯誤訊息
+    // 失敗 banner：紅色，顯示錯誤訊息 + 重試按鈕
     else if (m.status === '失敗') {
+      var retryFid = '';
+      if (m.audioUrl) {
+        var mm = m.audioUrl.match(/\/d\/([^\/]+)/);
+        if (mm) retryFid = mm[1];
+      }
       h += '<div class="proc-banner proc-banner-failed">';
       h += '<div class="proc-icon">⚠️</div>';
       h += '<div class="proc-body">';
       h += '<div class="proc-title">轉檔失敗</div>';
       if (m.processingError) h += '<div class="proc-err">' + escapeHtml(m.processingError) + '</div>';
-      h += '<div class="proc-sub">在 Notion 刪掉這筆 → 回首頁重新按處理即可重試</div>';
+      if (retryFid) {
+        var dateStr = (m.date || '').substring(0, 10);
+        h += '<button type="button" id="retryBtn" class="proc-retry-btn" data-fileid="' + escapeAttr(retryFid) + '" data-date="' + escapeAttr(dateStr) + '" data-type="' + escapeAttr(m.type || '') + '">🔁 重試</button>';
+        h += '<div class="proc-sub">按下會自動封存這筆 → 重新建立 placeholder → 重跑 AI</div>';
+      } else {
+        h += '<div class="proc-sub">這筆沒有錄音連結，無法自動重試</div>';
+      }
       h += '</div></div>';
     }
 

@@ -155,13 +155,24 @@ export default {
           }
           if (!fileId) return cors(json({ success: false, error: '需要 fileId 或 (date + type)' }, 400), origin);
 
-          // dedup：fileId 已處理過 → 回既有 notionId 給前端跳過去
+          // dedup：fileId 已處理過 → 看狀態決定
+          //   - '失敗' → 自動 archive，繼續往下建新 placeholder（等於原地重試，使用者不用手動刪）
+          //   - 其他狀態 → 回既有 notionId 給前端跳過去
           const existing = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
             method: 'POST',
-            body: JSON.stringify({ filter: { property: '錄音檔連結', url: { contains: fileId } }, page_size: 1 }),
+            body: JSON.stringify({ filter: { property: '錄音檔連結', url: { contains: fileId } }, page_size: 5 }),
           }).catch(() => ({ results: [] }));
           if (existing.results && existing.results.length > 0) {
-            return cors(json({ success: true, queued: false, notionId: existing.results[0].id, alreadyDone: true }), origin);
+            // 找第一個「非失敗」的 entry → 直接回那個
+            const live = existing.results.find(p => (p.properties?.['狀態']?.select?.name) !== '失敗');
+            if (live) {
+              return cors(json({ success: true, queued: false, notionId: live.id, alreadyDone: true }), origin);
+            }
+            // 全部都是失敗的 → archive 它們，繼續建新 placeholder（重試）
+            for (const failed of existing.results) {
+              try { await archiveNotionPage(env, failed.id); console.log(`[retry] archive 失敗 entry ${failed.id.substring(0,8)}`); }
+              catch (e) { console.warn(`[retry] archive ${failed.id} 失敗: ${e.message}`); }
+            }
           }
 
           // 解析檔名 → 建 placeholder
