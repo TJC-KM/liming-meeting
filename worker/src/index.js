@@ -433,8 +433,9 @@ async function getDriveFileMeta(env, fileId) {
 // =============================================================================
 
 function parseFilename(name, createdTime) {
+  // 日期後空白用 \s* 容忍「沒有空白」的舊檔（如 2020-12-26神向你所要的(...)）
   // 講員括號接受半形 () 或全形 （），主題裡若也有半形括號（如 (一)(二)）會 backtrack 處理
-  const m = name.match(/^(\d{4})-(\d{2})-(\d{2})\s+(.+?)\s*[（(]([^）)]+)[）)]\.(mp3|m4a|wav|ogg|aac)$/i);
+  const m = name.match(/^(\d{4})-(\d{2})-(\d{2})\s*(.+?)\s*[（(]([^）)]+)[）)]\.(mp3|m4a|wav|ogg|aac)$/i);
   if (!m) return null;
 
   const year = parseInt(m[1], 10);
