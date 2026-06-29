@@ -310,7 +310,7 @@
   }
 
   function getNextScheduleTime(skip) {
-    var slots = [6*60+30, 9*60, 12*60+30, 16*60+30, 18*60+30, 21*60+30];
+    var slots = [6*60+30, 9*60, 12*60+30, 16*60, 18*60+30, 21*60+30];
     var now = new Date();
     var taipeiMin = ((now.getUTCHours() + 8) % 24) * 60 + now.getUTCMinutes();
     var found = 0;
