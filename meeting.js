@@ -327,7 +327,6 @@
     }
     return '下次排程';
   }
-  }
 
   // 處理中：一次性 render 完整骨架（header + player + actions + AI skeleton）
   // 不再有計時器，避免引導客戶注意「為什麼這麼久」
