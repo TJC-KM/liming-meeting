@@ -128,12 +128,14 @@ export default {
         const fileId = params.get('fileId');
         if (!fileId) return cors(json({ error: 'fileId required' }, 400), origin);
         if (!env.PROCESS_QUEUE) return cors(json({ error: 'KV PROCESS_QUEUE 未設定' }, 500), origin);
+        const kvList = await env.PROCESS_QUEUE.list({ prefix: 'audio:' });
+        const position = kvList.keys.length;
         await env.PROCESS_QUEUE.put(`audio:${fileId}`, JSON.stringify({
           fileId,
           queuedAt: new Date().toISOString(),
         }), { expirationTtl: 7 * 24 * 60 * 60 });
-        console.log(`[queue] fileId=${fileId} 已加入 KV 排隊`);
-        return cors(json({ success: true, queued: true, fileId }), origin);
+        console.log(`[queue] fileId=${fileId} 已加入 KV 排隊，position=${position}`);
+        return cors(json({ success: true, queued: true, fileId, position }), origin);
       }
 
       // -- Drive process (Gemini + Notion) --

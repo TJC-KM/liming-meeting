@@ -295,8 +295,9 @@
         btn.disabled = true;
         btn.textContent = '排隊中...';
         gasApi.queue(qAudioFileId)
-          .then(function () {
-            btn.textContent = '✓ 已加入排隊';
+          .then(function (r) {
+            var nextTime = getNextScheduleTime(r.position || 0);
+            btn.textContent = '✓ 已加入排隊，約 ' + nextTime + ' 處理';
             btn.classList.add('btn-success');
           })
           .catch(function (e) {
@@ -306,6 +307,26 @@
           });
       });
     }
+  }
+
+  function getNextScheduleTime(skip) {
+    var slots = [6*60+30, 9*60, 12*60+30, 16*60, 18*60+30, 21*60+30];
+    var now = new Date();
+    var taipeiMin = ((now.getUTCHours() + 8) % 24) * 60 + now.getUTCMinutes();
+    var found = 0;
+    for (var i = 0; i < slots.length * 2; i++) {
+      var s = slots[i % slots.length];
+      if (s > taipeiMin || i >= slots.length) {
+        if (found >= skip) {
+          var h = Math.floor(s / 60), m = s % 60;
+          return h + ':' + (m < 10 ? '0' : '') + m;
+        }
+        found++;
+        taipeiMin = s;
+      }
+    }
+    return '下次排程';
+  }
   }
 
   // 處理中：一次性 render 完整骨架（header + player + actions + AI skeleton）
