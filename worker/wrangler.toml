@@ -22,7 +22,7 @@ crons = ["30 22 * * *", "30 4 * * *", "30 7 * * *", "30 13 * * *"]
 # 建立指令：npx wrangler kv namespace create PROCESS_QUEUE
 [[kv_namespaces]]
 binding = "PROCESS_QUEUE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "daa2816cade04632a507af8082dff906"
 
 # 啟用 Workers Logs（持久化 log，可在 Dashboard → Observability → Logs 查詢）
 [observability.logs]
