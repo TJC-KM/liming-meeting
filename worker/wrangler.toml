@@ -16,7 +16,13 @@ QUOTA_PER_RUN = "1"
 # 教會檔多時可手動到 meeting 頁按處理（每按一次走獨立 invocation，不受 cron 額度限制）
 # Cron 格式：minute hour day-of-month month day-of-week（時間都是 UTC）
 [triggers]
-crons = ["30 22 * * *", "30 4 * * *", "30 9 * * *", "30 13 * * *"]
+crons = ["30 22 * * *", "30 4 * * *", "30 7 * * *", "30 13 * * *"]
+
+# KV：手動轉錄排隊（建立後填入 id）
+# 建立指令：npx wrangler kv namespace create PROCESS_QUEUE
+[[kv_namespaces]]
+binding = "PROCESS_QUEUE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
 # 啟用 Workers Logs（持久化 log，可在 Dashboard → Observability → Logs 查詢）
 [observability.logs]

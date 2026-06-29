@@ -123,6 +123,19 @@ export default {
         return cors(json(result || { ok: true }), origin);
       }
 
+      // -- Drive queue (把 fileId 寫入 KV，等排程處理) --
+      if (path === '/drive/queue' && (request.method === 'POST' || request.method === 'GET')) {
+        const fileId = params.get('fileId');
+        if (!fileId) return cors(json({ error: 'fileId required' }, 400), origin);
+        if (!env.PROCESS_QUEUE) return cors(json({ error: 'KV PROCESS_QUEUE 未設定' }, 500), origin);
+        await env.PROCESS_QUEUE.put(`audio:${fileId}`, JSON.stringify({
+          fileId,
+          queuedAt: new Date().toISOString(),
+        }), { expirationTtl: 7 * 24 * 60 * 60 });
+        console.log(`[queue] fileId=${fileId} 已加入 KV 排隊`);
+        return cors(json({ success: true, queued: true, fileId }), origin);
+      }
+
       // -- Drive process (Gemini + Notion) --
       // 同步處理：跟 LimingUploader 對齊，client 等到底
       // 若 Gemini 超過 ~30s wall clock 會收到 524；不過 LimingUploader 證明
@@ -2084,6 +2097,43 @@ async function runDailyProcess(env) {
     console.warn('[daily] sweep 階段出錯，繼續處理新檔:', e.message);
   }
 
+  // ⭐ 優先處理手動排隊的 KV 項目
+  let processed = 0;
+  const results = [];
+  if (env.PROCESS_QUEUE) {
+    try {
+      const kvList = await env.PROCESS_QUEUE.list({ prefix: 'audio:' });
+      for (const key of kvList.keys) {
+        if (processed >= QUOTA) break;
+        const raw = await env.PROCESS_QUEUE.get(key.name);
+        if (!raw) continue;
+        const item = JSON.parse(raw);
+        console.log(`[daily] [KV] 處理手動排隊 fileId=${item.fileId}`);
+        try {
+          const r = await processAudio(env, { fileId: item.fileId });
+          if (r.success) {
+            console.log(`[daily] [KV] ✓ ${item.fileId} → ${r.notionId}`);
+            results.push({ fileId: item.fileId, ok: true, notionId: r.notionId, source: 'kv' });
+            processed++;
+          } else {
+            console.log(`[daily] [KV] skip ${item.fileId}: ${r.error}`);
+            results.push({ fileId: item.fileId, ok: false, error: r.error, source: 'kv' });
+          }
+        } catch (e) {
+          console.error(`[daily] [KV] error ${item.fileId}: ${e.message}`);
+          results.push({ fileId: item.fileId, ok: false, error: e.message, source: 'kv' });
+        }
+        await env.PROCESS_QUEUE.delete(key.name);
+      }
+    } catch (e) {
+      console.warn('[daily] KV queue 讀取失敗:', e.message);
+    }
+  }
+  if (processed >= QUOTA) {
+    console.log(`[daily] KV 排隊已用完 quota，跳過自動掃描`);
+    return { quota: QUOTA, processed, results };
+  }
+
   let candidates;
   try {
     candidates = await listAllAudioCandidates(env);
@@ -2116,8 +2166,6 @@ async function runDailyProcess(env) {
 
   console.log(`[daily] 候選 ${candidates.length} 個，未處理 ${unprocessed.length} 個`);
 
-  let processed = 0;
-  const results = [];
   for (const file of unprocessed) {
     if (processed >= QUOTA) break;
     console.log(`[daily] [${processed + 1}/${QUOTA}] 處理 ${file.name}${file.uploadedToday ? ' (今天上傳)' : ''}`);

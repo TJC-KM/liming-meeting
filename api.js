@@ -92,6 +92,21 @@ const gasApi = {
     return data;
   },
 
+  // 手動排隊：把 fileId 寫入 Worker KV，等下次排程處理
+  async queue(fileId) {
+    const r = await fetch(`${CONFIG.API_URL}/drive/queue?fileId=${encodeURIComponent(fileId)}`, {
+      method: 'POST',
+      cache: 'no-store',
+    }).catch(err => {
+      console.warn('[queue fetch]', err.message);
+      return null;
+    });
+    if (!r) throw new Error('排隊失敗：網路錯誤');
+    const data = await r.json().catch(() => ({}));
+    if (data.error) throw new Error(data.error);
+    return data;
+  },
+
   // 處理單篇預查
   async processStudy(fileId) {
     const r = await fetch(`${CONFIG.API_URL}/study/process?fileId=${encodeURIComponent(fileId)}`, {

@@ -27,6 +27,9 @@
 
   if (id) {
     loadById(id);
+  } else if (qAudioFileId && !processing) {
+    // 待轉檔模式：有音檔但尚未觸發轉錄，讓使用者決定是否排隊
+    renderPendingAudio();
   } else if (qDate && qType) {
     // 等待模式：Worker 還在處理，poll Notion 直到出現
     // 但 player / download / 心得 是 Notion 寫入前就能用，所以一次性 render skeleton
@@ -258,6 +261,51 @@
       audioUrl: qAudioFileId ? 'https://drive.google.com/file/d/' + qAudioFileId + '/view' : null,
       studyUrl: qStudyFileId ? 'https://drive.google.com/file/d/' + qStudyFileId + '/view' : null,
     };
+  }
+
+  // 待轉檔：有音檔但尚未觸發，讓使用者決定是否加入排隊
+  function renderPendingAudio() {
+    document.title = (qTopic || '待轉檔') + ' - 教會聚會紀錄';
+    var h = '';
+
+    h += '<div class="meeting-header">';
+    h += '<div class="meeting-title">' + escapeHtml(qTopic || '(未命名)') + '</div>';
+    h += '<div class="meeting-meta">';
+    h += '<span class="type-tag">' + escapeHtml(qType) + '</span>';
+    h += '<span class="badge badge-pending">待轉錄</span>';
+    if (qDate) h += '<span>📅 ' + escapeHtml(qDate) + '</span>';
+    if (qSpeaker) h += '<span>🎤 ' + escapeHtml(qSpeaker) + '</span>';
+    h += '</div></div>';
+
+    h += '<aside class="meeting-aside">';
+    h += audioPlayerHTML(qAudioFileId);
+    h += '<div class="actions">';
+    h += '<button type="button" class="action-btn" id="btnQueue">📋 加入轉錄排隊</button>';
+    h += '</div>';
+    if (qSizeMB) h += '<p class="meeting-info-note">檔案大小：' + escapeHtml(qSizeMB) + ' MB</p>';
+    h += '<p class="meeting-info-note">排隊後將於下次排程時間（每天 06:30、12:30、15:30、21:30）自動轉錄。</p>';
+    h += '</aside>';
+
+    h += '<div class="meeting-body"></div>';
+    document.getElementById('root').innerHTML = h;
+
+    var btn = document.getElementById('btnQueue');
+    if (btn) {
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        btn.textContent = '排隊中...';
+        gasApi.queue(qAudioFileId)
+          .then(function () {
+            btn.textContent = '✓ 已加入排隊';
+            btn.classList.add('btn-success');
+          })
+          .catch(function (e) {
+            btn.disabled = false;
+            btn.textContent = '📋 加入轉錄排隊';
+            alert('排隊失敗：' + e.message);
+          });
+      });
+    }
   }
 
   // 處理中：一次性 render 完整骨架（header + player + actions + AI skeleton）

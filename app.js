@@ -980,7 +980,18 @@ function bindEvents() {
         const id = b.dataset.id;
         if (id) location.href = 'meeting.html?id=' + encodeURIComponent(id) + (state.theme !== 'adult' ? '&theme=' + state.theme : '');
       } else if (action === 'process') {
-        handleProcess(b.dataset.date, b.dataset.type, b.dataset.fileid);
+        const d = b.dataset;
+        const file = state.driveFiles.find(function(f) { return f.id === d.fileid; }) || {};
+        const qp = new URLSearchParams({
+          audioFileId: d.fileid || '',
+          date: d.date || '',
+          type: d.type || '',
+          topic: file.topic || '',
+          speaker: file.speaker || '',
+          sizeMB: file.sizeMB ? String(file.sizeMB) : '',
+        });
+        if (state.theme !== 'adult') qp.set('theme', state.theme);
+        location.href = 'meeting.html?' + qp.toString();
       } else if (action === 'process-study') {
         handleProcessStudy(b.dataset.fileid);
       }
