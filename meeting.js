@@ -283,7 +283,7 @@
     h += '<button type="button" class="action-btn" id="btnQueue">📋 加入轉錄排隊</button>';
     h += '</div>';
     if (qSizeMB) h += '<p class="meeting-info-note">檔案大小：' + escapeHtml(qSizeMB) + ' MB</p>';
-    h += '<p class="meeting-info-note">排隊後將於下次排程時間（每天 06:30、12:30、15:30、21:30）自動轉錄。</p>';
+    h += '<p class="meeting-info-note">排隊後將於下次排程時間（每天 06:30、12:30、16:00、21:30）自動轉錄。</p>';
     h += '</aside>';
 
     h += '<div class="meeting-body"></div>';

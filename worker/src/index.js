@@ -2085,6 +2085,35 @@ async function sweepAndRetryOne(env) {
   return true;
 }
 
+// cron 統一處理入口（KV 排隊 + 自動掃描共用）：dedup → 建 placeholder → processAudio
+// 失敗 → markForRetry（sweeper 之後接手，滿 3 次標永久失敗）
+// 統一走 placeholder 的三個好處：
+//   1. 失敗看得見（Notion 有「待重試」條目 + 錯誤訊息），不再無聲消失
+//   2. 永久失敗的檔在 Notion 有紀錄（含錄音連結）→ 掃描 dedup 自動跳過 → 不再無限重掃
+//   3. 重試計數統一由 sweeper 管理
+// 回傳 { heavy }：true = 真的跑了 Gemini pipeline（呼叫端應計入 quota，不論成敗，保護 subrequest 預算）
+async function processWithPlaceholder(env, fileId) {
+  // dedup：Notion 已有任何此 fileId 的 entry（含待重試/失敗）→ skip
+  // 待重試的交給 sweeper，永久失敗的不再重跑
+  if (await isAudioAlreadyProcessed(env, fileId)) {
+    return { success: false, heavy: false, error: 'Notion 已有此錄音的紀錄' };
+  }
+  const fileMeta = await getDriveFileMeta(env, fileId);
+  const parsed = parseFilename(fileMeta.name, fileMeta.createdTime);
+  if (!parsed || !parsed.type) {
+    return { success: false, heavy: false, error: `檔名格式錯誤或無法判斷類型：${fileMeta.name}` };
+  }
+  const audioUrl = `https://drive.google.com/file/d/${fileId}/view`;
+  const pageId = await createPlaceholderNotionPage(env, parsed, audioUrl);
+  try {
+    const r = await processAudio(env, { fileId }, pageId);
+    return Object.assign({ heavy: true }, r);
+  } catch (e) {
+    await markForRetry(env, pageId, 1, e.message).catch(() => {});
+    return { success: false, heavy: true, error: e.message, notionId: pageId };
+  }
+}
+
 async function runDailyProcess(env) {
   const QUOTA = parseInt(env.QUOTA_PER_RUN || '5', 10);
   console.log(`[daily] start at ${new Date().toISOString()}, quota=${QUOTA}`);
@@ -2113,18 +2142,22 @@ async function runDailyProcess(env) {
         const item = JSON.parse(raw);
         console.log(`[daily] [KV] 處理手動排隊 fileId=${item.fileId}`);
         try {
-          const r = await processAudio(env, { fileId: item.fileId });
+          // 統一走 placeholder：失敗會在 Notion 留「待重試」紀錄（sweeper 接手），
+          // 所以下面無條件刪 KV key 是安全的，不再無聲消失
+          const r = await processWithPlaceholder(env, item.fileId);
           if (r.success) {
             console.log(`[daily] [KV] ✓ ${item.fileId} → ${r.notionId}`);
             results.push({ fileId: item.fileId, ok: true, notionId: r.notionId, source: 'kv' });
-            processed++;
           } else {
-            console.log(`[daily] [KV] skip ${item.fileId}: ${r.error}`);
+            console.log(`[daily] [KV] ${r.heavy ? '失敗(已記錄待重試)' : 'skip'} ${item.fileId}: ${r.error}`);
             results.push({ fileId: item.fileId, ok: false, error: r.error, source: 'kv' });
           }
+          // heavy 嘗試（成功或失敗）都計入 quota —— 保護 subrequest 預算
+          if (r.heavy) processed++;
         } catch (e) {
           console.error(`[daily] [KV] error ${item.fileId}: ${e.message}`);
           results.push({ fileId: item.fileId, ok: false, error: e.message, source: 'kv' });
+          processed++;  // 意外錯誤也視為重活，保守計入
         }
         await env.PROCESS_QUEUE.delete(key.name);
       }
@@ -2173,19 +2206,23 @@ async function runDailyProcess(env) {
     if (processed >= QUOTA) break;
     console.log(`[daily] [${processed + 1}/${QUOTA}] 處理 ${file.name}${file.uploadedToday ? ' (今天上傳)' : ''}`);
     try {
-      const r = await processAudio(env, { fileId: file.id });
+      // 統一走 placeholder：失敗會標「待重試」→ 之後這檔在 Notion 有紀錄
+      // → 掃描 dedup 會跳過它 → 同一個壞檔不再每輪 cron 無限重掃
+      const r = await processWithPlaceholder(env, file.id);
       if (r.success) {
         console.log(`[daily] ✓ ${file.name} → ${r.notionId}`);
         results.push({ name: file.name, ok: true, notionId: r.notionId });
-        processed++;
       } else {
-        console.log(`[daily] skip ${file.name}: ${r.error}`);
+        console.log(`[daily] ${r.heavy ? '失敗(已記錄待重試)' : 'skip'} ${file.name}: ${r.error}`);
         results.push({ name: file.name, ok: false, error: r.error });
-        // 失敗不算進 quota，繼續下一筆（避免被同一個壞檔卡住整批）
       }
+      // heavy 嘗試（跑了 Gemini pipeline）不論成敗都計入 quota，保護 subrequest 預算；
+      // 輕量 skip（dedup 命中 / 檔名不合法）不計，繼續試下一筆
+      if (r.heavy) processed++;
     } catch (e) {
       console.error(`[daily] error ${file.name}: ${e.message}`);
       results.push({ name: file.name, ok: false, error: e.message });
+      processed++;  // 意外錯誤保守計入 quota
     }
   }
 
@@ -2425,7 +2462,11 @@ async function processAudio(env, payload, pageId) {
     const totalSec = Math.round((Date.now() - t0) / 1000);
     const lastStep = Object.keys(stepTimes).pop() || '(尚未開始)';
     console.error(`${m} ✗ 失敗於 [${lastStep}] 之後 | 累積 ${totalSec}s | 已完成步驟ms: ${JSON.stringify(stepTimes)} | error: ${e.message}`);
-    // 將時間資訊塞進 error 讓 caller 看到
+    // ⭐ placeholder 模式（有 pageId）必須 rethrow —— 否則呼叫端的 catch 接不到失敗，
+    //    markForRetry 永遠不會執行，placeholder 卡在 in-flight 直到 15 分鐘卡死救援。
+    //    sweeper 也會誤以為重試成功。
+    if (pageId) throw e;
+    // legacy 呼叫端（無 pageId）維持回傳錯誤物件的契約
     return {
       success: false,
       error: e.message,
