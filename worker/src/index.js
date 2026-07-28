@@ -1440,11 +1440,18 @@ function formatDuration(sec) {
 // 預查文件同步（Drive 預查資料夾 → Notion 週三晚間紀錄）
 // =============================================================================
 
-const STUDY_EXTS = ['.docx', '.pdf', '.doc'];
+const STUDY_EXTS = ['.docx', '.pdf', '.doc', '.pptx', '.ppt'];
 const STUDY_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
   'application/msword', // .doc
   'application/pdf', // .pdf
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx
+  'application/vnd.ms-powerpoint', // .ppt
+];
+// PPT 類：extractDocText 時要轉成 Google Slides（而非 Docs）再 export 文字
+const STUDY_PPT_MIMES = [
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-powerpoint',
 ];
 const SPEAKER_TITLES = ['弟兄', '姊妹', '執事', '傳道', '神學生'];
 
@@ -1462,7 +1469,9 @@ async function getKnownSpeakers(env) {
 
 function parseStudyFilename(name, knownSpeakers) {
   knownSpeakers = knownSpeakers || [];
-  const base = name.replace(/\.(docx|pdf|doc)$/i, '').trim();
+  const base = name.replace(/\.(docx|pdf|doc|pptx|ppt)$/i, '')
+    .replace(/^\d+[.、_\-\s]+/, '')  // 去掉開頭流水號（如「16.士師記第13章預查」的「16.」）
+    .trim();
   const titlePattern = SPEAKER_TITLES.join('|');
 
   // 0. 優先匹配已知講員（最長優先，例如「黃以諾執事」優先於「黃以諾」）
@@ -1605,7 +1614,11 @@ async function scanStudyFolder(token, folderId, results) {
 // 把 .docx/.pdf 轉成 Google Doc 再 export 純文字
 async function extractDocText(env, file) {
   const token = await getGoogleAccessToken(env);
-  // Step 1: copy 成 Google Doc 格式
+  // Step 1: copy 成對應的 Google 編輯器格式（Drive 會自動轉換）
+  // - doc/docx/pdf → Google Docs
+  // - ppt/pptx → Google Slides（Slides 也支援 text/plain export，逐張投影片文字依序輸出）
+  const isPpt = STUDY_PPT_MIMES.indexOf(file.mimeType) >= 0 || /\.pptx?$/i.test(file.name || '');
+  const targetMime = isPpt ? 'application/vnd.google-apps.presentation' : 'application/vnd.google-apps.document';
   const copyRes = await fetch(
     `${DRIVE_API}/files/${file.id}/copy?supportsAllDrives=true`,
     {
@@ -1613,7 +1626,7 @@ async function extractDocText(env, file) {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: `_temp_study_${Date.now()}`,
-        mimeType: 'application/vnd.google-apps.document',
+        mimeType: targetMime,
       }),
     }
   );
