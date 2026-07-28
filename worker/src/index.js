@@ -1250,6 +1250,7 @@ function transformPage(page) {
     audioUrl: p['錄音檔連結']?.url || null,
     studyUrl: p['預查資料連結']?.url || null,
     attachmentUrl: p['附件資料夾']?.url || null,
+    slidesUrl: p['投影片']?.url || null,
     processingError: getRichText(p['處理錯誤']),
     createdTime: page.created_time || null,
     lastEditedTime: page.last_edited_time || null,
@@ -1636,6 +1637,8 @@ async function extractDocText(env, file) {
   const { id: tempId } = await copyRes.json();
 
   let text;
+  let slidesPdfId = null;
+  let slidesPdfError = null;
   try {
     // Step 2: export plain text
     const exportRes = await fetch(
@@ -1646,6 +1649,18 @@ async function extractDocText(env, file) {
       throw new Error(`Drive export 失敗 ${exportRes.status}: ${(await exportRes.text()).substring(0, 200)}`);
     }
     text = await exportRes.text();
+
+    // Step 2b: PPT 額外轉一份 PDF 存回原資料夾（meeting 頁嵌 Drive PDF 預覽 = 全頁直向捲動）
+    // 失敗不致命 —— 文字照樣寫入，只是沒有投影片預覽
+    if (isPpt) {
+      try {
+        slidesPdfId = await exportSlidesPdf(token, tempId, file);
+        console.log(`[extractDocText] 投影片 PDF 已存: ${slidesPdfId}`);
+      } catch (e) {
+        console.warn(`[extractDocText] 投影片 PDF 轉出失敗（不影響文字）: ${e.message}`);
+        slidesPdfError = e.message;  // 帶回 API 回應方便 debug
+      }
+    }
   } finally {
     // Step 3: 移到垃圾桶（用 PATCH trashed:true，比 DELETE 永久刪除更可靠 —
     // SA 對共用 Drive 內的檔案常沒有永久刪除權限，DELETE 會回 404）
@@ -1662,7 +1677,77 @@ async function extractDocText(env, file) {
       console.warn(`[extractDocText] 移除暫存錯誤: ${e.message}, tempId=${tempId}`);
     }
   }
-  return text;
+  return { text, slidesPdfId, slidesPdfError };
+}
+
+// 把（已轉成 Google Slides 的）暫存檔匯出成 PDF，上傳回原始檔所在資料夾
+// 檔名：<原檔名去副檔名>_投影片.pdf；同名舊檔先移垃圾桶（overwrite 重跑不累積）
+// 注意：Drive export API 有 10MB 上限，超過時 fallback 到 docs.google.com 的 export 端點
+async function exportSlidesPdf(token, slidesTempId, srcFile) {
+  // 1. export PDF bytes（官方 API → 超限時 fallback）
+  let pdfRes = await fetch(
+    `${DRIVE_API}/files/${slidesTempId}/export?mimeType=application/pdf`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!pdfRes.ok) {
+    console.warn(`[slidesPdf] 官方 export ${pdfRes.status}，改用 docs.google.com export`);
+    pdfRes = await fetch(
+      `https://docs.google.com/presentation/d/${slidesTempId}/export/pdf`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!pdfRes.ok) throw new Error(`Slides→PDF export 失敗 ${pdfRes.status}`);
+  }
+  const pdfBytes = await pdfRes.arrayBuffer();
+
+  const pdfName = String(srcFile.name || 'slides').replace(/\.(pptx|ppt)$/i, '') + '_投影片.pdf';
+  const parent = (srcFile.parents && srcFile.parents[0]) || srcFile.parentId || null;
+
+  // 2. 同名舊 PDF 先清（重跑時避免累積）
+  if (parent) {
+    try {
+      const q = encodeURIComponent(`name = '${pdfName.replace(/'/g, "\\'")}' and '${parent}' in parents and trashed = false`);
+      const listRes = await fetch(
+        `${DRIVE_API}/files?q=${q}&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (listRes.ok) {
+        for (const f of ((await listRes.json()).files || [])) {
+          await fetch(`${DRIVE_API}/files/${f.id}?supportsAllDrives=true`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trashed: true }),
+          });
+        }
+      }
+    } catch (e) { console.warn(`[slidesPdf] 清舊檔失敗（略過）: ${e.message}`); }
+  }
+
+  // 3. multipart 上傳
+  const boundary = 'pdf_' + Date.now();
+  const enc = new TextEncoder();
+  const metaObj = { name: pdfName, mimeType: 'application/pdf' };
+  if (parent) metaObj.parents = [parent];
+  const head = enc.encode(
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metaObj)}\r\n` +
+    `--${boundary}\r\nContent-Type: application/pdf\r\n\r\n`
+  );
+  const tail = enc.encode(`\r\n--${boundary}--`);
+  const body = new Uint8Array(head.byteLength + pdfBytes.byteLength + tail.byteLength);
+  body.set(head, 0);
+  body.set(new Uint8Array(pdfBytes), head.byteLength);
+  body.set(tail, head.byteLength + pdfBytes.byteLength);
+
+  const upRes = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body,
+    }
+  );
+  if (!upRes.ok) throw new Error(`PDF 上傳失敗 ${upRes.status}: ${(await upRes.text()).substring(0, 200)}`);
+  const upData = await upRes.json();
+  return upData.id;
 }
 
 // 清理殘留的 _temp_study_* 暫存檔（給手動觸發或日後 cron 用）
@@ -1834,7 +1919,7 @@ async function processSingleStudyDoc(env, fileId, overwrite, requireContentDate,
   const t0 = Date.now();
   const token = await getGoogleAccessToken(env);
   const metaRes = await fetch(
-    `${DRIVE_API}/files/${fileId}?fields=id,name,size,createdTime,description,mimeType&supportsAllDrives=true`,
+    `${DRIVE_API}/files/${fileId}?fields=id,name,size,createdTime,description,mimeType,parents&supportsAllDrives=true`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (!metaRes.ok) {
@@ -1845,9 +1930,9 @@ async function processSingleStudyDoc(env, fileId, overwrite, requireContentDate,
   const { topic, speaker } = parseStudyFilename(file.name, await getKnownSpeakers(env));
   console.log(`[study/process] ${file.name}${overwrite ? ' (overwrite)' : ''}`);
 
-  let text;
+  let text, slidesPdfId, slidesPdfError;
   try {
-    text = await extractDocText(env, file);
+    ({ text, slidesPdfId, slidesPdfError } = await extractDocText(env, file));
   } catch (e) {
     return { success: false, error: '抽取內文失敗：' + e.message };
   }
@@ -1900,18 +1985,36 @@ async function processSingleStudyDoc(env, fileId, overwrite, requireContentDate,
     '轉檔耗時': { rich_text: chunkRichText(formatDuration(elapsedSec)) },
   };
   if (speaker) properties['講員'] = { rich_text: chunkRichText(speaker) };
+  if (slidesPdfId) properties['投影片'] = { url: `https://drive.google.com/file/d/${slidesPdfId}/view` };
   // 預查不寫「簡易重點」(C 方案：留空，校稿時自填)
 
   try {
     const allChildren = textToNotionBlocks(text);
-    const data = await notionFetch(env, '/pages', {
-      method: 'POST',
-      body: JSON.stringify({
-        parent: { database_id: env.NOTION_DATABASE_ID },
-        properties,
-        children: allChildren.slice(0, 100),
-      }),
-    });
+    let data;
+    try {
+      data = await notionFetch(env, '/pages', {
+        method: 'POST',
+        body: JSON.stringify({
+          parent: { database_id: env.NOTION_DATABASE_ID },
+          properties,
+          children: allChildren.slice(0, 100),
+        }),
+      });
+    } catch (e) {
+      // Notion DB 沒有「投影片」屬性 → 拿掉重試（避免 schema 缺欄位整個失敗）
+      if (properties['投影片'] && /投影片|property is not valid|Could not find property/i.test(e.message)) {
+        console.warn(`[study/process] 無「投影片」屬性，去掉重試: ${e.message}`);
+        delete properties['投影片'];
+        data = await notionFetch(env, '/pages', {
+          method: 'POST',
+          body: JSON.stringify({
+            parent: { database_id: env.NOTION_DATABASE_ID },
+            properties,
+            children: allChildren.slice(0, 100),
+          }),
+        });
+      } else throw e;
+    }
     if (allChildren.length > 100) {
       console.log(`[study/process] 主體 100 已寫，附加 ${allChildren.length - 100} blocks`);
       await notionAppendChildrenBatched(env, data.id, allChildren.slice(100));
@@ -1925,6 +2028,8 @@ async function processSingleStudyDoc(env, fileId, overwrite, requireContentDate,
       archived,
       elapsedSec,
       blocks: allChildren.length,
+      slidesPdfId: slidesPdfId || null,
+      slidesPdfError: slidesPdfError || null,
     };
   } catch (e) {
     return { success: false, error: 'Notion 寫入失敗：' + e.message };
@@ -1964,7 +2069,7 @@ async function handleStudySync(env, limit) {
       }
 
       // 讀內容（用於日期偵測 + Notion body）
-      const text = await extractDocText(env, doc);
+      const { text, slidesPdfId } = await extractDocText(env, doc);
 
       const dateInfo = detectStudyDate(text, doc.description, doc.createdTime);
       const dateStr = dateInfo.date;
@@ -1979,6 +2084,7 @@ async function handleStudySync(env, limit) {
         '預查資料連結': { url: `https://drive.google.com/file/d/${doc.id}/view` },
       };
       if (speaker) properties['講員'] = { rich_text: chunkRichText(speaker) };
+      if (slidesPdfId) properties['投影片'] = { url: `https://drive.google.com/file/d/${slidesPdfId}/view` };
       // 預查不寫「簡易重點」
 
       // 寫入 Notion（分批：先 100，超過的 append）

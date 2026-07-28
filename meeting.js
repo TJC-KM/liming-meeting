@@ -570,7 +570,8 @@
 
     // AI 筆記聲明：錄音轉檔的頁面，每次進來都要先確認才能看內容（教會謹慎方針）
     var hasBody = m.blocks && m.blocks.length > 0;
-    var hasContent = m.info || m.summary || hasBody;
+    var hasSlides = !!m.slidesUrl;
+    var hasContent = m.info || m.summary || hasBody || hasSlides;
     var gated = !!m.audioUrl && hasContent;
     if (gated) h += aiDisclaimerHTML(m);
 
@@ -591,6 +592,18 @@
     }
 
     if (hasBody) h += renderBlocks(m.blocks);
+
+    // 投影片：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，非翻頁式）
+    if (hasSlides) {
+      var slm = m.slidesUrl.match(/\/d\/([^\/]+)/);
+      if (slm) {
+        h += '<div class="section slides-section">';
+        h += '<div class="section-title">📽 投影片</div>';
+        h += '<iframe class="slides-frame" src="https://drive.google.com/file/d/' + escapeAttr(slm[1]) + '/preview" allow="fullscreen"></iframe>';
+        h += '<a class="slides-open" href="' + escapeAttr(m.slidesUrl) + '" target="_blank" rel="noopener">↗ 在新分頁開啟投影片</a>';
+        h += '</div>';
+      }
+    }
 
     if (!hasContent) {
       h += '<div class="empty">此聚會尚未有整理內容</div>';
