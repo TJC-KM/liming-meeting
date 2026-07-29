@@ -1457,6 +1457,8 @@ const STUDY_PPT_MIMES = [
 const SPEAKER_TITLES = ['弟兄', '姊妹', '執事', '傳道', '神學生'];
 
 function isStudyFile(name, mimeType) {
+  // 系統自產的投影片 PDF（PPT 轉出）不是預查文件，排除，否則會再被掃成新的待轉檔
+  if (/_投影片\.pdf$/i.test(name || '')) return false;
   if (mimeType && STUDY_MIME_TYPES.indexOf(mimeType) >= 0) return true;
   const lower = (name || '').toLowerCase();
   return STUDY_EXTS.some(ext => lower.endsWith(ext));
