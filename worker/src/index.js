@@ -2154,8 +2154,16 @@ async function sweepAndRetryOne(env) {
       }),
     });
     for (const p of (stuck.results || [])) {
-      // 卡死視為「已試 1 次」→ 待重試 1/3（之後正常計數接手）
-      await markForRetry(env, p.id, 1, 'placeholder 卡死（背景任務被 Cloudflare 中斷），已自動排入重試');
+      // 超時紀錄：卡在哪一步、卡了多久
+      const stage = p.properties?.['狀態']?.select?.name || '?';
+      const lastEdited = p.last_edited_time ? new Date(p.last_edited_time) : null;
+      const stuckMin = lastEdited ? Math.round((Date.now() - lastEdited.getTime()) / 60000) : '?';
+      // 從「處理錯誤」的「第N次嘗試」標記還原計數（否則重試被 kill 會被重標 1/3，計數歸零永遠到不了 2/3）
+      const prevErr = getRichText(p.properties?.['處理錯誤']) || '';
+      const am = prevErr.match(/第(\d+)次嘗試/);
+      const attemptsSoFar = am ? parseInt(am[1], 10) : 1;
+      const msg = `逾時：第${attemptsSoFar}次嘗試卡在「${stage}」約 ${stuckMin} 分鐘（背景任務被中斷），已自動排入重試`;
+      await markForRetry(env, p.id, attemptsSoFar, msg);
     }
     if (stuck.results && stuck.results.length) console.log(`[sweep] ${stuck.results.length} 筆卡死 → 待重試`);
   } catch (e) {
@@ -2195,7 +2203,21 @@ async function sweepAndRetryOne(env) {
   }
   const fileId = fm[1];
   console.log(`[sweep] 重試 ${retryPage.id.substring(0,8)} (已失敗 ${attempts} 次) file=${fileId.substring(0,8)}`);
-  await updatePageStatus(env, retryPage.id, '處理中');  // 更新 last_edited + 讓前端看得到在跑
+  // 狀態→處理中 + 在「處理錯誤」記「第N次嘗試」—— 若這次又被 kill，
+  // 卡死救援可從標記還原計數（markForRetry(N)→ 2/3、3/3…不會歸零）
+  try {
+    await notionFetch(env, `/pages/${retryPage.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        properties: {
+          '狀態': { select: { name: '處理中' } },
+          '處理錯誤': { rich_text: chunkRichText(`第${attempts + 1}次嘗試進行中（自動重試）`) },
+        },
+      }),
+    });
+  } catch (e) {
+    await updatePageStatus(env, retryPage.id, '處理中');  // 「處理錯誤」缺屬性時退回只改狀態
+  }
   try {
     await processAudio(env, { fileId }, retryPage.id);
     console.log(`[sweep] ✓ 重試成功 ${retryPage.id.substring(0,8)}`);
