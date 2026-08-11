@@ -108,8 +108,14 @@ const gasApi = {
   },
 
   // 處理單篇預查
-  async processStudy(fileId) {
-    const r = await fetch(`${CONFIG.API_URL}/study/process?fileId=${encodeURIComponent(fileId)}`, {
+  // ⭐ 預設帶 requireContentDate=1：日期只能靠 createdTime 時拒絕寫入。
+  //    因為多數舊檔是同一天搬進 Drive 的，createdTime 全部相同 → 會集體堆到同一個週三。
+  //    被拒時前端會提示使用者手動指定日期（dateOverride）。
+  async processStudy(fileId, dateOverride) {
+    const qs = new URLSearchParams({ fileId });
+    if (dateOverride) qs.set('date', dateOverride);
+    else qs.set('requireContentDate', '1');
+    const r = await fetch(`${CONFIG.API_URL}/study/process?${qs}`, {
       method: 'POST',
       cache: 'no-store',
       keepalive: true,

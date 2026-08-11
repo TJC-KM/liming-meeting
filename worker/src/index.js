@@ -1320,8 +1320,28 @@ async function isStudyAlreadyProcessed(env, fileId) {
   }
 }
 
+// 查出「預查資料連結」含此 fileId 的所有 Notion page id（overwrite 用）
+// 用 fileId 而非 date+type：重跑的目標是「這份文件的舊紀錄」，
+// 它的日期可能本來就是錯的（正是重跑的原因），用日期找會找錯人。
+async function findStudyPageIdsByFileId(env, fileId) {
+  try {
+    const r = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: { property: '預查資料連結', url: { contains: fileId } },
+        page_size: 10,
+      }),
+    });
+    return (r.results || []).map(p => p.id);
+  } catch (e) {
+    return [];
+  }
+}
+
 // 用 Notion filter 精準查詢「該日期+類型是否已有紀錄」（一次 subrequest）
-// 仍用於預查 path（每週三只會有一場，date+type 對它是夠唯一的）
+// ⚠️ 目前無呼叫端。原用於預查 path，假設「每週三只會有一場」；
+//    但預查文件內文日期打錯時會撞到別週的紀錄，被靜默擋下且 Notion 不留痕跡，
+//    無法診斷。已改用 isStudyAlreadyProcessed(fileId)，與 /study/sync 批次一致。
 async function isNotionAlreadyProcessed(env, dateStr, type) {
   try {
     const r = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
@@ -1963,17 +1983,22 @@ async function processSingleStudyDoc(env, fileId, overwrite, requireContentDate,
     };
   }
 
-  // 重複處理：overwrite → 封存舊紀錄；否則跳過
+  // 重複處理：overwrite → 封存「這份文件」的舊紀錄；否則同檔已存在就跳過
+  //
+  // ⭐ 去重與封存都以 fileId 為準，跟 /study/sync 批次一致。
+  //    不用 date+type：預查文件內文日期打錯時會撞到別週的紀錄，
+  //    導致合法的新文件被靜默擋下（且預查失敗不建 placeholder，Notion 不留痕跡）。
+  //    改用 fileId 後，撞日期的兩份預查會並存於同一天，讓人看得見再去 Notion 手動改日期。
   let archived = 0;
   if (overwrite) {
-    const ids = await findNotionPageIds(env, dateStr, type);
+    const ids = await findStudyPageIdsByFileId(env, file.id);
     for (const pid of ids) {
       try { await archiveNotionPage(env, pid); archived++; }
       catch (e) { console.warn(`[study/process] 封存 ${pid} 失敗: ${e.message}`); }
     }
-    if (archived) console.log(`[study/process] 封存 ${archived} 筆舊紀錄 (${dateStr} ${type})`);
-  } else if (await isNotionAlreadyProcessed(env, dateStr, type)) {
-    return { success: false, error: `Notion 已有 ${dateStr} ${type} 的紀錄` };
+    if (archived) console.log(`[study/process] 封存 ${archived} 筆同檔舊紀錄 (fileId=${file.id})`);
+  } else if (await isStudyAlreadyProcessed(env, file.id)) {
+    return { success: false, error: 'Notion 已有此檔案的紀錄（如需重跑請加 overwrite=1）' };
   }
 
   const elapsedSec = Math.round((Date.now() - t0) / 1000);

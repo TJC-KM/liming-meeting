@@ -1059,14 +1059,53 @@ async function handleProcessStudy(fileId) {
   startCompletionPolling();
   render();
 
-  // Fire 處理（不 await）
-  gasApi.processStudy(fileId)
-    .then(r => console.log('[processStudy]', r))
-    .catch(e => console.warn('[processStudy] worker 失敗', e.message));
+  // ⭐ 等結果再決定跳不跳頁。
+  //    舊版是 fire-and-forget + 立刻 location.href，worker 回的錯誤只進 console
+  //    就被跳頁清掉，meeting 頁再去 poll 一筆永遠不會出現的紀錄 → 無限轉圈。
+  // 日期被拒（內文/description 都沒日期）→ 讓使用者手動指定後重試一次
+  async function attempt(dateOverride) {
+    try {
+      return await gasApi.processStudy(fileId, dateOverride);
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
 
-  // 跳到 meeting 頁等待（用 estimatedDate + 週三晚間 + studyFileId）
+  let r = await attempt(null);
+
+  if (r && r.success === false && /取得日期|指定日期/.test(r.error || '')) {
+    const guess = doc.estimatedDate || '';
+    const input = prompt(
+      '這份預查文件的內文找不到聚會日期，無法自動判斷。\n' +
+      '（下方是依檔案建立時間推估的，通常不準，請確認後修改）\n\n' +
+      '請輸入聚會日期 YYYY-MM-DD：',
+      guess
+    );
+    if (!input) {
+      clearProcessing(key);
+      render();
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.trim())) {
+      clearProcessing(key);
+      render();
+      alert('日期格式不正確，請用 YYYY-MM-DD');
+      return;
+    }
+    r = await attempt(input.trim());
+  }
+
+  if (!r || r.success === false) {
+    clearProcessing(key);
+    render();
+    alert('預查處理失敗：\n\n' + ((r && r.error) || '未知錯誤'));
+    return;
+  }
+
+  // 跳到 meeting 頁等待（用 worker 實際寫入的日期 + 週三晚間 + studyFileId）
+  // r.date 才是真正寫進 Notion 的日期；doc.estimatedDate 只是 createdTime 推估值
   const qp = new URLSearchParams({
-    date: doc.estimatedDate,
+    date: (r && r.date) || doc.estimatedDate,
     type: '週三晚間',
     topic: doc.topic || '',
     speaker: doc.speaker || '',
