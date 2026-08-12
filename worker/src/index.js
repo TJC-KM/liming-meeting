@@ -2457,8 +2457,68 @@ async function runDailyProcess(env) {
     }
   }
 
+  // ④ 預查自動處理 —— 只有本輪「完全沒做錄音重活」時才走到這裡。
+  //    錄音永遠優先：兩者相加約 33 + 30 會撞破 free tier 的 50 subrequest/invocation。
+  if (processed === 0) {
+    try {
+      const sr = await processOneNewStudyDoc(env);
+      if (sr) results.push(sr);
+    } catch (e) {
+      console.warn('[daily] 預查自動處理出錯（不影響錄音）:', e.message);
+    }
+  } else {
+    console.log('[daily] 本輪已做錄音，跳過預查自動處理');
+  }
+
   console.log(`[daily] done, processed=${processed}/${QUOTA}, remaining=${unprocessed.length - processed}`);
   return { quota: QUOTA, processed, remaining: unprocessed.length - processed, results };
+}
+
+// 自動處理「新上傳」的預查文件，一輪 cron 最多做一份。
+//
+// 為什麼只做新的：舊檔多半是整批搬進 Drive 的，createdTime 全部相同
+// （截至 2026-08 有 131 份的推估日期全是 2026-04-08）。自動處理它們會集體
+// 堆到同一天，所以只撿最近上傳的，舊檔維持人工處理。
+//
+// 為什麼一律 requireContentDate：日期只能靠 createdTime 時直接拒絕寫入。
+// 被拒的檔案留在待處理清單，由人在 index 點擊、手動指定日期。
+const STUDY_AUTO_MAX_AGE_DAYS = 14;
+const STUDY_AUTO_MAX_CHECKS = 3;   // 最多查幾份的 dedup，控制 subrequest
+
+async function processOneNewStudyDoc(env) {
+  const docs = await listStudyDocs(env);
+  const cutoff = Date.now() - STUDY_AUTO_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  const fresh = docs
+    .filter(d => d.createdTime && Date.parse(d.createdTime) >= cutoff)
+    .sort((a, b) => Date.parse(b.createdTime) - Date.parse(a.createdTime));
+
+  console.log(`[daily] [study] 共 ${docs.length} 份，${STUDY_AUTO_MAX_AGE_DAYS} 天內新上傳 ${fresh.length} 份`);
+  if (!fresh.length) return null;
+
+  let checks = 0;
+  for (const doc of fresh) {
+    if (checks >= STUDY_AUTO_MAX_CHECKS) break;
+    checks++;
+    if (await isStudyAlreadyProcessed(env, doc.id)) continue;
+
+    // 一輪只實際處理一份（不論成功或被日期守衛擋下），避免 subrequest 失控
+    console.log(`[daily] [study] 處理 ${doc.name}`);
+    const r = await processSingleStudyDoc(env, doc.id, false, true);
+    if (r.success) {
+      console.log(`[daily] [study] ✓ ${doc.name} → ${r.notionId} (${r.date})`);
+    } else {
+      console.log(`[daily] [study] ✗ ${doc.name}: ${r.error}`);
+    }
+    return {
+      name: doc.name,
+      ok: !!r.success,
+      error: r.error || null,
+      date: r.date || null,
+      source: 'study',
+    };
+  }
+  console.log('[daily] [study] 新上傳的都已處理過，無事可做');
+  return null;
 }
 
 // 列出所有候選音檔（已解析檔名 + 今天上傳旗標）
