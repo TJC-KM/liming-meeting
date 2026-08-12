@@ -1476,8 +1476,13 @@ const STUDY_PPT_MIMES = [
 ];
 const SPEAKER_TITLES = ['弟兄', '姊妹', '執事', '傳道', '神學生'];
 
+// 自產預覽 PDF 統一收納的子資料夾名稱（建在來源檔所在的書卷資料夾底下，不存在就建立）
+const STUDY_OUTPUT_FOLDER = '_轉檔產出';
+
 function isStudyFile(name, mimeType) {
-  // 系統自產的投影片 PDF（PPT 轉出）不是預查文件，排除，否則會再被掃成新的待轉檔
+  // 系統自產的預覽 PDF（PPT/Word 轉出）不是預查文件，排除，否則會再被掃成新的待轉檔
+  // ⚠️ 雙保險之一：另一道是 scanStudyFolder 不遞迴進 STUDY_OUTPUT_FOLDER。
+  //    改動自產檔名時這條 regex 必須同步改，否則會無限循環生成。
   if (/_投影片\.pdf$/i.test(name || '')) return false;
   if (mimeType && STUDY_MIME_TYPES.indexOf(mimeType) >= 0) return true;
   const lower = (name || '').toLowerCase();
@@ -1627,11 +1632,43 @@ async function scanStudyFolder(token, folderId, results) {
   const data = await res.json();
   for (const f of (data.files || [])) {
     if (f.mimeType === 'application/vnd.google-apps.folder') {
+      // 自產 PDF 的收納資料夾不掃（雙保險之二，見 isStudyFile）
+      if (f.name === STUDY_OUTPUT_FOLDER) continue;
       await scanStudyFolder(token, f.id, results);
     } else if (isStudyFile(f.name, f.mimeType)) {
       results.push(f);
     }
   }
+}
+
+// 取得（必要時建立）指定父資料夾底下的同名子資料夾，回傳 folderId
+// 用於把自產的預覽 PDF 收進 <書卷資料夾>/_轉檔產出/，不弄亂來源資料夾
+async function ensureChildFolder(token, parentId, name) {
+  const q = encodeURIComponent(
+    `name = '${name.replace(/'/g, "\\'")}' and '${parentId}' in parents ` +
+    `and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+  );
+  const listRes = await fetch(
+    `${DRIVE_API}/files?q=${q}&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (listRes.ok) {
+    const found = ((await listRes.json()).files || [])[0];
+    if (found) return found.id;
+  }
+  const createRes = await fetch(`${DRIVE_API}/files?supportsAllDrives=true`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentId],
+    }),
+  });
+  if (!createRes.ok) {
+    throw new Error(`建立子資料夾失敗 ${createRes.status}: ${(await createRes.text()).substring(0, 200)}`);
+  }
+  return (await createRes.json()).id;
 }
 
 // 把 .docx/.pdf 轉成 Google Doc 再 export 純文字
@@ -1641,6 +1678,7 @@ async function extractDocText(env, file) {
   // - doc/docx/pdf → Google Docs
   // - ppt/pptx → Google Slides（Slides 也支援 text/plain export，逐張投影片文字依序輸出）
   const isPpt = STUDY_PPT_MIMES.indexOf(file.mimeType) >= 0 || /\.pptx?$/i.test(file.name || '');
+  const isPdf = file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.name || '');
   const targetMime = isPpt ? 'application/vnd.google-apps.presentation' : 'application/vnd.google-apps.document';
   const copyRes = await fetch(
     `${DRIVE_API}/files/${file.id}/copy?supportsAllDrives=true`,
@@ -1672,14 +1710,20 @@ async function extractDocText(env, file) {
     }
     text = await exportRes.text();
 
-    // Step 2b: PPT 額外轉一份 PDF 存回原資料夾（meeting 頁嵌 Drive PDF 預覽 = 全頁直向捲動）
-    // 失敗不致命 —— 文字照樣寫入，只是沒有投影片預覽
-    if (isPpt) {
+    // Step 2b: 產出「完整文件」PDF 供 meeting 頁嵌 Drive 預覽（全頁直向捲動）。
+    // 純文字 export 抽不到圖片裡的字（圖表、事件地圖等），所以三種來源都要有 PDF：
+    //   - pdf  → 原檔本身就是 PDF，直接沿用，不轉檔、不佔空間（0 subrequest）
+    //   - ppt  → 由暫存 Google Slides 轉出
+    //   - word → 由暫存 Google Docs 轉出
+    // 失敗不致命 —— 文字照樣寫入，只是沒有預覽區塊。
+    if (isPdf) {
+      slidesPdfId = file.id;
+    } else {
       try {
-        slidesPdfId = await exportSlidesPdf(token, tempId, file);
-        console.log(`[extractDocText] 投影片 PDF 已存: ${slidesPdfId}`);
+        slidesPdfId = await exportPreviewPdf(token, tempId, file, isPpt);
+        console.log(`[extractDocText] 預覽 PDF 已存: ${slidesPdfId}`);
       } catch (e) {
-        console.warn(`[extractDocText] 投影片 PDF 轉出失敗（不影響文字）: ${e.message}`);
+        console.warn(`[extractDocText] 預覽 PDF 轉出失敗（不影響文字）: ${e.message}`);
         slidesPdfError = e.message;  // 帶回 API 回應方便 debug
       }
     }
@@ -1705,29 +1749,48 @@ async function extractDocText(env, file) {
 // 把（已轉成 Google Slides 的）暫存檔匯出成 PDF，上傳回原始檔所在資料夾
 // 檔名：<原檔名去副檔名>_投影片.pdf；同名舊檔先移垃圾桶（overwrite 重跑不累積）
 // 注意：Drive export API 有 10MB 上限，超過時 fallback 到 docs.google.com 的 export 端點
-async function exportSlidesPdf(token, slidesTempId, srcFile) {
+async function exportPreviewPdf(token, tempId, srcFile, isPpt) {
   // 1. export PDF bytes（官方 API → 超限時 fallback）
+  // ⚠️ fallback 端點依暫存檔的型別而不同：Slides 用 /presentation/，Docs 用 /document/。
+  //    用錯會在「檔案 >10MB 走 fallback」時才失敗，是個間歇性的坑。
   let pdfRes = await fetch(
-    `${DRIVE_API}/files/${slidesTempId}/export?mimeType=application/pdf`,
+    `${DRIVE_API}/files/${tempId}/export?mimeType=application/pdf`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (!pdfRes.ok) {
-    console.warn(`[slidesPdf] 官方 export ${pdfRes.status}，改用 docs.google.com export`);
-    pdfRes = await fetch(
-      `https://docs.google.com/presentation/d/${slidesTempId}/export/pdf`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!pdfRes.ok) throw new Error(`Slides→PDF export 失敗 ${pdfRes.status}`);
+    console.warn(`[previewPdf] 官方 export ${pdfRes.status}，改用 docs.google.com export`);
+    const fallbackUrl = isPpt
+      ? `https://docs.google.com/presentation/d/${tempId}/export/pdf`
+      : `https://docs.google.com/document/d/${tempId}/export?format=pdf`;
+    pdfRes = await fetch(fallbackUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (!pdfRes.ok) throw new Error(`${isPpt ? 'Slides' : 'Docs'}→PDF export 失敗 ${pdfRes.status}`);
   }
   const pdfBytes = await pdfRes.arrayBuffer();
 
-  const pdfName = String(srcFile.name || 'slides').replace(/\.(pptx|ppt)$/i, '') + '_投影片.pdf';
-  const parent = (srcFile.parents && srcFile.parents[0]) || srcFile.parentId || null;
+  // 檔名沿用 _投影片.pdf 後綴（Word 產出也用同一個）——
+  // isStudyFile() 的排除 regex 綁在這個字串上，改名必須同步改那裡，否則無限循環。
+  const pdfName = String(srcFile.name || 'preview').replace(/\.(pptx|ppt|docx|doc)$/i, '') + '_投影片.pdf';
+  const srcParent = (srcFile.parents && srcFile.parents[0]) || srcFile.parentId || null;
 
-  // 2. 同名舊 PDF 先清（重跑時避免累積）
+  // 2. 收進 <來源資料夾>/_轉檔產出/，不存在就建立；建不出來就退回來源資料夾
+  let parent = srcParent;
+  if (srcParent) {
+    try {
+      parent = await ensureChildFolder(token, srcParent, STUDY_OUTPUT_FOLDER);
+    } catch (e) {
+      console.warn(`[previewPdf] 子資料夾取得失敗，改存來源資料夾: ${e.message}`);
+    }
+  }
+
+  // 3. 同名舊 PDF 先清（重跑時避免累積）
+  //    同時清子資料夾與來源資料夾 —— 後者是為了收拾這次改動前留在來源資料夾的舊檔
   if (parent) {
     try {
-      const q = encodeURIComponent(`name = '${pdfName.replace(/'/g, "\\'")}' and '${parent}' in parents and trashed = false`);
+      const scopes = [`'${parent}' in parents`];
+      if (srcParent && srcParent !== parent) scopes.push(`'${srcParent}' in parents`);
+      const q = encodeURIComponent(
+        `name = '${pdfName.replace(/'/g, "\\'")}' and (${scopes.join(' or ')}) and trashed = false`
+      );
       const listRes = await fetch(
         `${DRIVE_API}/files?q=${q}&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
         { headers: { Authorization: `Bearer ${token}` } }
@@ -1741,10 +1804,10 @@ async function exportSlidesPdf(token, slidesTempId, srcFile) {
           });
         }
       }
-    } catch (e) { console.warn(`[slidesPdf] 清舊檔失敗（略過）: ${e.message}`); }
+    } catch (e) { console.warn(`[previewPdf] 清舊檔失敗（略過）: ${e.message}`); }
   }
 
-  // 3. multipart 上傳
+  // 4. multipart 上傳
   const boundary = 'pdf_' + Date.now();
   const enc = new TextEncoder();
   const metaObj = { name: pdfName, mimeType: 'application/pdf' };

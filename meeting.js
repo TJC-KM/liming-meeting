@@ -593,14 +593,16 @@
 
     if (hasBody) h += renderBlocks(m.blocks);
 
-    // 投影片：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，非翻頁式）
+    // 完整文件：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，非翻頁式）
+    // 三種來源都會有：PPT/Word 由 worker 轉出，PDF 直接沿用原檔。
+    // 純文字抽取讀不到圖片裡的字（圖表、事件地圖等），這一區才是完整內容。
     if (hasSlides) {
       var slm = m.slidesUrl.match(/\/d\/([^\/]+)/);
       if (slm) {
         h += '<div class="section slides-section">';
-        h += '<div class="section-title">📽 投影片</div>';
+        h += '<div class="section-title">📄 完整文件</div>';
         h += '<iframe class="slides-frame" src="https://drive.google.com/file/d/' + escapeAttr(slm[1]) + '/preview" allow="fullscreen"></iframe>';
-        h += '<a class="slides-open" href="' + escapeAttr(m.slidesUrl) + '" target="_blank" rel="noopener">↗ 在新分頁開啟投影片</a>';
+        h += '<a class="slides-open" href="' + escapeAttr(m.slidesUrl) + '" target="_blank" rel="noopener">↗ 在新分頁開啟</a>';
         h += '</div>';
       }
     }
