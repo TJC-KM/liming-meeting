@@ -84,6 +84,52 @@ export default {
         return cors(json(await processSingleStudyDoc(env, fileId, overwrite, requireContentDate, dateOverride)), origin);
       }
 
+      // -- 把指定檔案搬進「同一個父資料夾底下的子資料夾」（整理重複檔用）--
+      // 只改 parents，不刪檔、可逆。子資料夾不存在就建立。
+      // dryRun=1（預設）只回報計畫，要真的搬必須明確帶 apply=1。
+      if (path === '/admin/move-to-subfolder' && request.method === 'POST') {
+        const parentId = params.get('parentId');
+        const folderName = params.get('folderName') || '_重複備份';
+        const fileIds = (params.get('fileIds') || '').split(',').map(s => s.trim()).filter(Boolean);
+        if (!parentId || !fileIds.length) {
+          return cors(json({ error: 'parentId 與 fileIds 為必填' }, 400), origin);
+        }
+        if (!folderName.startsWith('_')) {
+          return cors(json({ error: '子資料夾名稱必須以底線開頭（掃描時才會被略過）' }, 400), origin);
+        }
+        const apply = params.get('apply') === '1';
+        return cors(json(await moveFilesToSubfolder(env, parentId, folderName, fileIds, apply)), origin);
+      }
+
+      // -- 把指定檔案移到 Drive 垃圾桶 --
+      // 錄音掃描（listAllAudioCandidates）是「副檔名 OR」跨整棵樹、不看資料夾，
+      // 只有 `trashed = false` 擋得住 → 要讓重複錄音不再被掃到，只能 trash。
+      // 用 PATCH trashed:true（非 DELETE）—— SA 對共用雲端硬碟通常沒有永久刪除權限，
+      // 而且垃圾桶保留 30 天，誤刪可還原。
+      if (path === '/admin/trash-files' && request.method === 'POST') {
+        const fileIds = (params.get('fileIds') || '').split(',').map(s => s.trim()).filter(Boolean);
+        if (!fileIds.length) return cors(json({ error: 'fileIds 為必填' }, 400), origin);
+        if (params.get('apply') !== '1') {
+          return cors(json({ dryRun: true, count: fileIds.length, fileIds,
+                             note: '未實際丟垃圾桶。要執行請加 apply=1' }), origin);
+        }
+        const token = await getGoogleAccessToken(env);
+        const trashed = [], failed = [];
+        for (const id of fileIds) {
+          try {
+            const r = await fetch(`${DRIVE_API}/files/${id}?fields=id,name&supportsAllDrives=true`, {
+              method: 'PATCH',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ trashed: true }),
+            });
+            if (!r.ok) { failed.push({ id, error: `${r.status}: ${(await r.text()).substring(0, 120)}` }); continue; }
+            trashed.push(await r.json());
+          } catch (e) { failed.push({ id, error: e.message }); }
+        }
+        console.log(`[trash] ${trashed.length} 個已丟垃圾桶，失敗 ${failed.length}`);
+        return cors(json({ trashedCount: trashed.length, failedCount: failed.length, trashed, failed }), origin);
+      }
+
       // -- Study sync (批次處理：保留用於初次匯入歷史) --
       if (path === '/study/sync' && (request.method === 'POST' || request.method === 'GET')) {
         const limit = parseInt(params.get('limit') || '8', 10);
@@ -1632,13 +1678,52 @@ async function scanStudyFolder(token, folderId, results) {
   const data = await res.json();
   for (const f of (data.files || [])) {
     if (f.mimeType === 'application/vnd.google-apps.folder') {
-      // 自產 PDF 的收納資料夾不掃（雙保險之二，見 isStudyFile）
-      if (f.name === STUDY_OUTPUT_FOLDER) continue;
+      // ⭐ 底線開頭的子資料夾一律不掃 —— 這是系統保留的收納區：
+      //    _轉檔產出（自產預覽 PDF）、_重複備份（整理掉的重複檔）等。
+      //    自產 PDF 若被掃成新預查會無限循環，這是雙保險之二（之一在 isStudyFile）。
+      if ((f.name || '').startsWith('_')) continue;
       await scanStudyFolder(token, f.id, results);
     } else if (isStudyFile(f.name, f.mimeType)) {
       results.push(f);
     }
   }
+}
+
+// 把 fileIds 從 parentId 搬進 <parentId>/<folderName>/
+//
+// 只動 parents（addParents / removeParents），不刪檔、隨時可搬回來。
+// folderName 一律以底線開頭 —— scanStudyFolder 會略過所有底線開頭的子資料夾，
+// 所以搬進去的檔案就不會再出現在待處理清單。
+//
+// 用途：整理搬檔造成的重複預查（同內容多份，只有一份轉過檔）。
+async function moveFilesToSubfolder(env, parentId, folderName, fileIds, apply) {
+  const token = await getGoogleAccessToken(env);
+  if (!apply) {
+    return { dryRun: true, parentId, folderName, count: fileIds.length, fileIds,
+             note: '未實際搬移。要執行請加 apply=1' };
+  }
+  const destId = await ensureChildFolder(token, parentId, folderName);
+  const moved = [], failed = [];
+  for (const id of fileIds) {
+    try {
+      const r = await fetch(
+        `${DRIVE_API}/files/${id}?addParents=${destId}&removeParents=${parentId}` +
+        `&fields=id,name,parents&supportsAllDrives=true`,
+        { method: 'PATCH', headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!r.ok) {
+        failed.push({ id, error: `${r.status}: ${(await r.text()).substring(0, 120)}` });
+        continue;
+      }
+      const f = await r.json();
+      moved.push({ id, name: f.name });
+    } catch (e) {
+      failed.push({ id, error: e.message });
+    }
+  }
+  console.log(`[move] ${moved.length} 個搬進 ${folderName}/，失敗 ${failed.length}`);
+  return { dryRun: false, destFolderId: destId, folderName, moved, failed,
+           movedCount: moved.length, failedCount: failed.length };
 }
 
 // 取得（必要時建立）指定父資料夾底下的同名子資料夾，回傳 folderId
@@ -2561,7 +2646,38 @@ async function listAllAudioCandidates(env) {
     .filter(f => f.parsed && f.parsed.type);  // 只留檔名可解析的
 
   console.log(`[daily] 檔名可解析 ${candidates.length} 個`);
-  return candidates;
+  return dedupeByBasename(candidates);
+}
+
+// 同一份錄音上傳了多種格式（最常見是 .mp3 + .wav）時只留一個。
+//
+// 為什麼需要：dedup 是比 fileId，兩個不同格式的檔 = 兩個 fileId → 兩個都會被轉，
+// Notion 同一天冒出兩筆一模一樣的紀錄，還各自吃掉一次 Gemini 額度。
+// （2026-08 清出 19 組這種重複，wav 通常是 mp3 的兩倍大。）
+//
+// 判斷依據是「去掉副檔名後的檔名完全相同」—— 檔名已含日期+講題+講員，
+// 撞名幾乎不可能是兩場不同的聚會。
+const AUDIO_EXT_PRIORITY = ['.mp3', '.m4a', '.aac', '.ogg', '.wav'];
+
+function dedupeByBasename(candidates) {
+  const rank = (name) => {
+    const i = AUDIO_EXT_PRIORITY.findIndex(e => name.toLowerCase().endsWith(e));
+    return i < 0 ? AUDIO_EXT_PRIORITY.length : i;
+  };
+  const groups = new Map();
+  for (const f of candidates) {
+    const base = f.name.replace(/\.[^.]+$/, '');
+    const cur = groups.get(base);
+    if (!cur || rank(f.name) < rank(cur.name)) groups.set(base, f);
+  }
+  const kept = [...groups.values()];
+  if (kept.length !== candidates.length) {
+    const keptIds = new Set(kept.map(f => f.id));
+    const dropped = candidates.filter(f => !keptIds.has(f.id)).map(f => f.name);
+    console.log(`[daily] 同名多格式，略過 ${dropped.length} 個：${dropped.slice(0, 5).join(' | ')}` +
+                (dropped.length > 5 ? ` …等 ${dropped.length} 個` : ''));
+  }
+  return kept;
 }
 
 // pageId（optional）：placeholder pattern — 若給，全程 update 該 page 的狀態，最後 finalizePageWithContent；
