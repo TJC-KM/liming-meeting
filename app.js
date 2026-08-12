@@ -369,8 +369,14 @@ function attachEntries(days) {
     });
   });
 
-  // Layer 3：Study 預查 → 已有同 topic 就合併，否則新增 pending-study
-  // 先建立已在 Notion 的 fileId 集合，避免已轉檔的檔案在估計日期再出現一次
+  // Layer 3：Study 預查 → 未在 Notion 的一律各自新增一列 pending-study
+  //
+  // ⭐ 去重只看 fileId，跟 L2 一致。
+  //    舊版在這裡多做一道「同一天同 topic 就把 doc 掛到既有項目上」的合併，
+  //    但所有 studyDoc 的繪製都被 `st === 'pending-study'` 包住 —— 掛到
+  //    filled / pending 項目上根本不會被畫出來，等於默默吃掉一份文件。
+  //    （topic/speaker 的 studyDoc 備援也不會觸發：既然是 topic 相同才合併，
+  //     那個項目本來就有 topic。）拿掉後每份未轉檔文件都看得見。
   const notionStudyFileIds = new Set(
     state.notionMeetings.filter(m => m.studyUrl).map(m => {
       const match = m.studyUrl.match(/\/d\/([^/]+)/);
@@ -383,11 +389,6 @@ function attachEntries(days) {
     const parts = doc.estimatedDate.split('-').map(Number);
     const dayObj = findDay(days, parts[0], parts[1], parts[2]);
     if (!dayObj) return;
-    const existing = dayObj.items.find(it => it.topic === doc.topic);
-    if (existing) {
-      existing.studyDoc = doc;
-      return;
-    }
     dayObj.items.push({
       year: parts[0], month: parts[1], day: parts[2], dow: dayObj.dow,
       topic: doc.topic, speaker: doc.speaker, type: '週三晚間',
