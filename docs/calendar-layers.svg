@@ -93,6 +93,6 @@
   <rect x="684" y="550" width="306" height="118" fill="#ffffff" stroke="#b9c2d4" rx="6"/>
   <text x="700" y="572" font-size="12.5" font-weight="700" fill="#23301f">pending-study → "process-study"</text>
   <text x="700" y="594" font-size="12" fill="#5c6270">當場同步呼叫 worker（約 7~15 秒）</text>
-  <text x="700" y="616" font-size="12" fill="#5c6270">帶 requireContentDate=1</text>
-  <text x="700" y="650" font-size="11.5" fill="#8b93a6">內文無日期 → prompt 請使用者手動指定</text>
+  <text x="700" y="616" font-size="12" fill="#5c6270">一律先轉，日期不準進 Notion 改</text>
+  <text x="700" y="650" font-size="11.5" fill="#8b93a6">requireContentDate 只用在 cron 自動處理</text>
 </svg>

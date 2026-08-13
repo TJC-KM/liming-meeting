@@ -108,13 +108,15 @@ const gasApi = {
   },
 
   // 處理單篇預查
-  // ⭐ 預設帶 requireContentDate=1：日期只能靠 createdTime 時拒絕寫入。
-  //    因為多數舊檔是同一天搬進 Drive 的，createdTime 全部相同 → 會集體堆到同一個週三。
-  //    被拒時前端會提示使用者手動指定日期（dateOverride）。
+  // ⭐ 手動點擊「一律先轉」，不帶 requireContentDate。
+  //    內文沒日期時 worker 會退回 createdTime 推算的日期，可能不準，
+  //    但使用者當下就在現場，進 Notion 改「聚會日期」比擋下來要求輸入日期實際得多
+  //    （prompt() 在手機上體驗很差，長輩用不了）。
+  //    ⚠️ cron 的自動處理仍然帶 requireContentDate=true（worker 端 processOneNewStudyDoc），
+  //       因為那是無人看管的，日期不可信時集體堆到同一天沒人會發現。
   async processStudy(fileId, dateOverride) {
     const qs = new URLSearchParams({ fileId });
     if (dateOverride) qs.set('date', dateOverride);
-    else qs.set('requireContentDate', '1');
     const r = await fetch(`${CONFIG.API_URL}/study/process?${qs}`, {
       method: 'POST',
       cache: 'no-store',

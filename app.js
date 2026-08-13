@@ -1063,37 +1063,13 @@ async function handleProcessStudy(fileId) {
   // ⭐ 等結果再決定跳不跳頁。
   //    舊版是 fire-and-forget + 立刻 location.href，worker 回的錯誤只進 console
   //    就被跳頁清掉，meeting 頁再去 poll 一筆永遠不會出現的紀錄 → 無限轉圈。
-  // 日期被拒（內文/description 都沒日期）→ 讓使用者手動指定後重試一次
-  async function attempt(dateOverride) {
-    try {
-      return await gasApi.processStudy(fileId, dateOverride);
-    } catch (e) {
-      return { success: false, error: e.message };
-    }
-  }
-
-  let r = await attempt(null);
-
-  if (r && r.success === false && /取得日期|指定日期/.test(r.error || '')) {
-    const guess = doc.estimatedDate || '';
-    const input = prompt(
-      '這份預查文件的內文找不到聚會日期，無法自動判斷。\n' +
-      '（下方是依檔案建立時間推估的，通常不準，請確認後修改）\n\n' +
-      '請輸入聚會日期 YYYY-MM-DD：',
-      guess
-    );
-    if (!input) {
-      clearProcessing(key);
-      render();
-      return;
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.trim())) {
-      clearProcessing(key);
-      render();
-      alert('日期格式不正確，請用 YYYY-MM-DD');
-      return;
-    }
-    r = await attempt(input.trim());
+  // 一律先轉。內文沒日期時 worker 退回 createdTime 推算值，可能不準，
+  // 交給使用者進 Notion 改「聚會日期」——比擋下來要求輸入日期實際得多。
+  let r;
+  try {
+    r = await gasApi.processStudy(fileId);
+  } catch (e) {
+    r = { success: false, error: e.message };
   }
 
   if (!r || r.success === false) {
