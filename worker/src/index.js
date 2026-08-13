@@ -1254,11 +1254,22 @@ async function finalizePageWithContent(env, pageId, markdown, processingInfo) {
   console.log(`[finalize] ${pageId.substring(0,8)} → 草稿 (${allChildren.length} blocks)`);
 }
 
+// ⚠️ 上限曾經是 5 頁（500 筆），2026-08 資料庫超過 500 筆後**無聲截斷**：
+//    查詢依聚會日期降冪，被砍掉的是最舊的紀錄（當時整批 2021~2022 使徒行傳
+//    在網站上消失）。而且 runDailyProcess 的錄音 dedup 也是用這個函式建集合，
+//    截斷會讓舊錄音被誤判成「未處理」而重新轉檔。
+//
+//    改成跑到 has_more=false 為止，MAX_PAGES 只是防無窮迴圈的保險。
+//    每頁 = 1 subrequest，free tier 每次 invocation 上限 50 —— 20 頁（2000 筆）
+//    已經吃掉不少預算，逼近時要改成加 filter 或分頁 API。
+const LIST_MEETINGS_MAX_PAGES = 20;
+
 async function listMeetings(env) {
   const body = { sorts: [{ property: '聚會日期', direction: 'descending' }], page_size: 100 };
   let allResults = [];
   let cursor;
-  for (let i = 0; i < 5; i++) {
+  let truncated = false;
+  for (let i = 0; i < LIST_MEETINGS_MAX_PAGES; i++) {
     if (cursor) body.start_cursor = cursor;
     const r = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
       method: 'POST',
@@ -1267,6 +1278,12 @@ async function listMeetings(env) {
     allResults = allResults.concat(r.results);
     if (!r.has_more) break;
     cursor = r.next_cursor;
+    if (i === LIST_MEETINGS_MAX_PAGES - 1) truncated = true;
+  }
+  if (truncated) {
+    // 不要無聲截斷 —— 這正是 2026-08 那次資料「消失」的原因
+    console.warn(`[listMeetings] ⚠️ 已達 ${LIST_MEETINGS_MAX_PAGES} 頁上限（${allResults.length} 筆）` +
+                 `，仍有更多資料未讀取。請提高 LIST_MEETINGS_MAX_PAGES 或改用 filter。`);
   }
   return { meetings: allResults.map(transformPage) };
 }
