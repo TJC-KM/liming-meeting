@@ -165,6 +165,16 @@ export default {
         return cors(json({ renamedCount: renamed.length, failedCount: failed.length, renamed, failed }), origin);
       }
 
+      // -- 依「目前的 Drive 檔名」重新同步 Notion 的聚會主題／講員 --
+      // 只更新這兩個屬性，不重新抽取內文、不動日期、不重建 blocks。
+      // 用途：已轉檔的文件事後改了檔名，Notion 的主題不會自動跟著變
+      //（topic/speaker 是轉檔當下寫入的），用這支把兩邊拉回一致。
+      if (path === '/admin/resync-study-meta' && request.method === 'POST') {
+        const fileId = params.get('fileId');
+        if (!fileId) return cors(json({ error: 'fileId required' }, 400), origin);
+        return cors(json(await resyncStudyMeta(env, fileId, params.get('apply') === '1')), origin);
+      }
+
       // -- Study sync (批次處理：保留用於初次匯入歷史) --
       if (path === '/study/sync' && (request.method === 'POST' || request.method === 'GET')) {
         const limit = parseInt(params.get('limit') || '8', 10);
@@ -1739,6 +1749,43 @@ async function scanStudyFolder(token, folderId, results) {
       results.push(f);
     }
   }
+}
+
+// 依目前的 Drive 檔名，重新同步該預查在 Notion 的「聚會主題」與「講員」。
+//
+// 為什麼需要：topic/speaker 是轉檔當下從檔名解析後寫進 Notion 的快照。
+// 事後整理檔名時 Notion 不會自動跟著變 —— 網站顯示的是 Notion 的值，
+// 所以只改 Drive 檔名，畫面上看不出任何差別。
+async function resyncStudyMeta(env, fileId, apply) {
+  const token = await getGoogleAccessToken(env);
+  const metaRes = await fetch(
+    `${DRIVE_API}/files/${fileId}?fields=id,name&supportsAllDrives=true`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!metaRes.ok) return { success: false, error: `Drive meta 失敗 ${metaRes.status}` };
+  const file = await metaRes.json();
+  const { topic, speaker } = parseStudyFilename(file.name, await getKnownSpeakers(env));
+
+  const pageIds = await findStudyPageIdsByFileId(env, fileId);
+  if (!pageIds.length) return { success: false, error: 'Notion 找不到此檔案的紀錄', name: file.name };
+
+  if (!apply) {
+    return { dryRun: true, name: file.name, topic, speaker, pageIds,
+             note: '未實際更新。要執行請加 apply=1' };
+  }
+  const properties = { '聚會主題': { title: chunkRichText(topic || '(未命名)') } };
+  if (speaker) properties['講員'] = { rich_text: chunkRichText(speaker) };
+
+  const updated = [];
+  for (const pid of pageIds) {
+    await notionFetch(env, `/pages/${pid}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ properties }),
+    });
+    updated.push(pid);
+  }
+  console.log(`[resync] ${file.name} → topic「${topic}」speaker「${speaker}」(${updated.length} 頁)`);
+  return { success: true, name: file.name, topic, speaker, updated };
 }
 
 // 把 fileIds 從 parentId 搬進 <parentId>/<folderName>/
