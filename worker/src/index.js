@@ -130,6 +130,41 @@ export default {
         return cors(json({ trashedCount: trashed.length, failedCount: failed.length, trashed, failed }), origin);
       }
 
+      // -- 批次改檔名 --
+      // body: [{ fileId, name }, ...]　apply=1 才真的改，否則只回報計畫。
+      // 預查的 topic/speaker 是從檔名解析的，所以整理檔名要在轉檔「之前」做。
+      // ⚠️ free tier 每次 invocation 限 50 subrequest → 呼叫端請自行分批（建議 ≤30 筆）。
+      if (path === '/admin/rename-files' && request.method === 'POST') {
+        let items;
+        try { items = await request.json(); } catch (e) { items = null; }
+        if (!Array.isArray(items) || !items.length) {
+          return cors(json({ error: 'body 需為 [{fileId,name}] 陣列' }, 400), origin);
+        }
+        if (items.length > 40) {
+          return cors(json({ error: `一次最多 40 筆（收到 ${items.length}），請分批` }, 400), origin);
+        }
+        if (params.get('apply') !== '1') {
+          return cors(json({ dryRun: true, count: items.length, items,
+                             note: '未實際改名。要執行請加 apply=1' }), origin);
+        }
+        const token = await getGoogleAccessToken(env);
+        const renamed = [], failed = [];
+        for (const it of items) {
+          if (!it || !it.fileId || !it.name) { failed.push({ item: it, error: '缺 fileId 或 name' }); continue; }
+          try {
+            const r = await fetch(`${DRIVE_API}/files/${it.fileId}?fields=id,name&supportsAllDrives=true`, {
+              method: 'PATCH',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: it.name }),
+            });
+            if (!r.ok) { failed.push({ fileId: it.fileId, error: `${r.status}: ${(await r.text()).substring(0, 120)}` }); continue; }
+            renamed.push(await r.json());
+          } catch (e) { failed.push({ fileId: it.fileId, error: e.message }); }
+        }
+        console.log(`[rename] ${renamed.length} 個已改名，失敗 ${failed.length}`);
+        return cors(json({ renamedCount: renamed.length, failedCount: failed.length, renamed, failed }), origin);
+      }
+
       // -- Study sync (批次處理：保留用於初次匯入歷史) --
       if (path === '/study/sync' && (request.method === 'POST' || request.method === 'GET')) {
         const limit = parseInt(params.get('limit') || '8', 10);
