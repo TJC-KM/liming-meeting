@@ -96,24 +96,19 @@
     const shareBtn = document.getElementById('shareBtn');
     if (shareBtn) shareBtn.addEventListener('click', shareLink);
 
-    // 失敗 banner 的重試按鈕：自動 archive 此筆 + 重建 placeholder + 跳新頁
+    // 待重試／失敗 banner 的重試按鈕：排進下一次排程，worker 會就地重跑「這一筆」。
+    // 不走即時處理（/drive/process）：那是在回應送出後的背景跑，約 30 秒就被 Cloudflare 砍，
+    // 轉檔卻要 40 秒～5 分鐘，幾乎一定卡死。（舊版還呼叫了不存在的 api.process，一按就報錯。）
     const retryBtn = document.getElementById('retryBtn');
     if (retryBtn) {
       retryBtn.addEventListener('click', async function () {
         const fid = retryBtn.dataset.fileid;
-        const dateStr = retryBtn.dataset.date;
-        const type = retryBtn.dataset.type;
         retryBtn.disabled = true;
-        retryBtn.textContent = '處理中…';
+        retryBtn.textContent = '排隊中…';
         try {
-          const r = await api.process(dateStr, type, fid);
-          if (r && r.notionId) {
-            location.href = 'meeting.html?id=' + encodeURIComponent(r.notionId);
-            return;
-          }
-          alert('重試失敗：worker 未回 notionId');
-          retryBtn.disabled = false;
-          retryBtn.textContent = '🔁 重試';
+          const r = await gasApi.queue(fid);
+          retryBtn.textContent = '✓ 已排入，約 ' + getNextScheduleTime(r.position || 0) + ' 重新轉錄';
+          retryBtn.classList.add('btn-success');
         } catch (e) {
           alert('重試失敗：' + e.message);
           retryBtn.disabled = false;
@@ -480,13 +475,13 @@
       h += '<div class="proc-icon">⏳</div>';
       h += '<div class="proc-body">';
       h += '<div class="proc-title">已排入自動重試佇列（' + escapeHtml(m.status) + '）</div>';
-      h += '<div class="proc-sub">AI 服務當下忙線，系統會在背景自動再試（最晚數小時內）。<strong>你可以關閉此頁</strong>，稍後再回來看，或按下方立即重試。</div>';
+      h += '<div class="proc-sub">系統會在背景自動再試（每天 06:30、16:00 各重試一筆，較新的聚會優先）。<strong>你可以關閉此頁</strong>，稍後再回來看；想早點處理可以按下方「重試」，會排進下一次排程。</div>';
       if (m.processingError) h += '<div class="proc-err">' + escapeHtml(m.processingError) + '</div>';
       var rfid = '';
       if (m.audioUrl) { var rm = m.audioUrl.match(/\/d\/([^\/]+)/); if (rm) rfid = rm[1]; }
       if (rfid) {
         var rdate = (m.date || '').substring(0, 10);
-        h += '<button type="button" id="retryBtn" class="proc-retry-btn" data-fileid="' + escapeAttr(rfid) + '" data-date="' + escapeAttr(rdate) + '" data-type="' + escapeAttr(m.type || '') + '">🔁 立即重試</button>';
+        h += '<button type="button" id="retryBtn" class="proc-retry-btn" data-fileid="' + escapeAttr(rfid) + '" data-date="' + escapeAttr(rdate) + '" data-type="' + escapeAttr(m.type || '') + '">🔁 重試</button>';
       }
       h += '</div></div>';
     }
@@ -502,10 +497,14 @@
       h += '<div class="proc-body">';
       h += '<div class="proc-title">轉檔失敗</div>';
       if (m.processingError) h += '<div class="proc-err">' + escapeHtml(m.processingError) + '</div>';
-      if (retryFid) {
+      // 檔案本身有問題（過大／空檔）重試也不會好，錯誤訊息已說明怎麼處理 → 不給重試鈕
+      var fileProblem = /錄音檔太大|錄音檔是空的/.test(m.processingError || '');
+      if (retryFid && !fileProblem) {
         var dateStr = (m.date || '').substring(0, 10);
         h += '<button type="button" id="retryBtn" class="proc-retry-btn" data-fileid="' + escapeAttr(retryFid) + '" data-date="' + escapeAttr(dateStr) + '" data-type="' + escapeAttr(m.type || '') + '">🔁 重試</button>';
-        h += '<div class="proc-sub">按下會自動封存這筆 → 重新建立 placeholder → 重跑 AI</div>';
+        h += '<div class="proc-sub">按下後會排進下一次排程（每天 06:30、12:30、16:00、21:30）重新轉錄這一筆</div>';
+      } else if (fileProblem) {
+        h += '<div class="proc-sub">請依上面的說明處理檔案後重新上傳</div>';
       } else {
         h += '<div class="proc-sub">這筆沒有錄音連結，無法自動重試</div>';
       }

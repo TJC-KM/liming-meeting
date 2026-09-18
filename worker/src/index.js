@@ -917,6 +917,20 @@ async function getConfigValue(env, key, fallback) {
   return (cfg[key] && cfg[key].length > 0) ? cfg[key] : fallback;
 }
 
+// Gemini 的回應不一定是 JSON：太久沒回時 Cloudflare 會直接回純文字「error code: 524」。
+// 以前直接 res.json()，Notion 上只看得到「Unexpected token 'e'… is not valid JSON」。
+async function readGeminiJson(res, label) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    if (res.status === 524 || /error code: 524/.test(text)) {
+      throw new Error(`Gemini 回應逾時（${label}，超過 100 秒沒回應，常見於 AI 忙碌時段）`);
+    }
+    throw new Error(`Gemini ${label}回應格式錯誤（HTTP ${res.status}）：${text.substring(0, 120)}`);
+  }
+}
+
 // 可選參數：
 //   extraContext: prepend 到 user prompt 之前（特殊指示）
 //   promptOverride: 完全替代從 Config 拿的 gemini_prompt（用於 split brain-dump 步驟）
@@ -961,7 +975,7 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
       body,
     }
   );
-  const upData = await upRes.json();
+  const upData = await readGeminiJson(upRes, '上傳');
   if (!upData.file?.uri) {
     throw new Error('Gemini 上傳失敗：' + JSON.stringify(upData).substring(0, 500));
   }
@@ -974,7 +988,7 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
   for (let i = 0; i < waits.length && state !== 'ACTIVE'; i++) {
     await new Promise(r => setTimeout(r, waits[i]));
     const chk = await fetch(`${GEMINI_BASE}/${upData.file.name}?key=${apiKey}`);
-    const chkData = await chk.json();
+    const chkData = await readGeminiJson(chk, '檔案狀態');
     state = chkData.state;
     if (state === 'FAILED') throw new Error('Gemini 檔案處理失敗');
   }
@@ -1002,7 +1016,7 @@ async function geminiAnalyze(env, audioBytes, mimeType, fileName, extraContext, 
       }),
     }
   );
-  const genData = await genRes.json();
+  const genData = await readGeminiJson(genRes, '分析');
 
   if (!genData?.candidates) {
     const rawMsg = genData?.error?.message || '無回應';
@@ -1079,7 +1093,7 @@ async function geminiAnalyzeText(env, prompt, textInput, attempt) {
       }),
     }
   );
-  const genData = await genRes.json();
+  const genData = await readGeminiJson(genRes, '整合');
 
   if (!genData?.candidates) {
     const rawMsg = genData?.error?.message || '無回應';
@@ -2704,42 +2718,84 @@ async function findNextRetryPage(env) {
 async function retryOnePending(env) {
   const retryPage = await findNextRetryPage(env);
   if (!retryPage) return false;  // 沒有待重試項目 → cron 去處理新檔
+  const attempts = parseAttemptCount(retryPage.properties?.['狀態']?.select?.name);  // 已失敗次數
+  await rerunPage(env, retryPage, attempts, '自動重試');
+  return true;
+}
 
-  // 重跑（這就是「全新 invocation 的全新預算」—— 跟原本失敗時是不同次 worker 執行）
-  const status = retryPage.properties?.['狀態']?.select?.name || '';
-  const attempts = parseAttemptCount(status);  // 已失敗次數
-  const audioUrl = retryPage.properties?.['錄音檔連結']?.url || '';
-  const fm = audioUrl.match(/\/d\/([^/]+)/);
-  if (!fm) {
-    console.warn(`[sweep] ${retryPage.id.substring(0,8)} 無 fileId → 永久失敗`);
-    await markPageFailed(env, retryPage.id, '無法取得錄音 fileId，無法重試');
-    return true;
+// 在「同一筆」Notion 頁上重跑轉檔（自動重試、手動按重試共用）。回傳是否成功。
+// 這就是「全新 invocation 的全新預算」—— 跟原本失敗時是不同次 worker 執行。
+async function rerunPage(env, page, attemptsSoFar, label) {
+  const tag = page.id.substring(0, 8);
+  const fileId = fileIdFromUrl(page.properties?.['錄音檔連結']?.url);
+  if (!fileId) {
+    console.warn(`[rerun] ${tag} 無 fileId → 永久失敗`);
+    await markPageFailed(env, page.id, '無法取得錄音 fileId，無法重試');
+    return false;
   }
-  const fileId = fm[1];
-  console.log(`[sweep] 重試 ${retryPage.id.substring(0,8)} (已失敗 ${attempts} 次) file=${fileId.substring(0,8)}`);
+  console.log(`[rerun] ${label} ${tag} (已失敗 ${attemptsSoFar} 次) file=${fileId.substring(0,8)}`);
   // 狀態→處理中 + 在「處理錯誤」記「第N次嘗試」—— 若這次又被 kill，
   // 卡死救援可從標記還原計數（markForRetry(N)→ 2/3、3/3…不會歸零）
   try {
-    await notionFetch(env, `/pages/${retryPage.id}`, {
+    await notionFetch(env, `/pages/${page.id}`, {
       method: 'PATCH',
       body: JSON.stringify({
         properties: {
           '狀態': { select: { name: '處理中' } },
-          '處理錯誤': { rich_text: chunkRichText(`第${attempts + 1}次嘗試進行中（自動重試）`) },
+          '處理錯誤': { rich_text: chunkRichText(`第${attemptsSoFar + 1}次嘗試進行中（${label}）`) },
         },
       }),
     });
   } catch (e) {
-    await updatePageStatus(env, retryPage.id, '處理中');  // 「處理錯誤」缺屬性時退回只改狀態
+    await updatePageStatus(env, page.id, '處理中');  // 「處理錯誤」缺屬性時退回只改狀態
   }
   try {
-    await processAudio(env, { fileId }, retryPage.id);
-    console.log(`[sweep] ✓ 重試成功 ${retryPage.id.substring(0,8)}`);
+    await processAudio(env, { fileId }, page.id);
+    console.log(`[rerun] ✓ ${label}成功 ${tag}`);
+    return true;
   } catch (e) {
-    console.error(`[sweep] ✗ 重試失敗 ${retryPage.id.substring(0,8)}: ${e.message}`);
-    await markAfterFailure(env, retryPage.id, attempts + 1, e);
+    console.error(`[rerun] ✗ ${label}失敗 ${tag}: ${e.message}`);
+    await markAfterFailure(env, page.id, attemptsSoFar + 1, e);
+    return false;
   }
-  return true;
+}
+
+// KV 排隊的檔案（人按了「加入排隊」或會議頁的「重試」）：
+//   沒有紀錄            → 新建 placeholder 轉檔
+//   只有待重試／失敗紀錄 → 就地重跑那一筆，重試次數歸零（人明確要求重來）
+//   其他（處理中、草稿…）→ 跳過
+//
+// 為什麼重試也走排隊：會議頁的重試按鈕以前呼叫 /drive/process，在 fetch 的 waitUntil 裡跑，
+// 回應送出後大約 30 秒就被砍，但轉檔要 40 秒～5 分鐘 → 幾乎一定卡死。（而且前端呼叫的
+// api.process 根本不存在，2026-06-26 加上按鈕以來一按就報錯，兩個問題疊在一起沒人發現。）
+async function processQueuedFile(env, fileId) {
+  let pages;
+  try {
+    const q = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
+      method: 'POST',
+      body: JSON.stringify({ filter: { property: '錄音檔連結', url: { contains: fileId } }, page_size: 5 }),
+    });
+    pages = q.results || [];
+  } catch (e) {
+    console.warn(`[queue] 查既有紀錄失敗，改走一般流程: ${e.message}`);
+    return processWithPlaceholder(env, fileId);
+  }
+  if (!pages.length) return processWithPlaceholder(env, fileId, { skipDedup: true });
+
+  const isRetryable = (p) => {
+    const s = p.properties?.['狀態']?.select?.name || '';
+    return s === '失敗' || /^待重試/.test(s);
+  };
+  if (pages.some(p => !isRetryable(p))) {
+    return { success: false, heavy: false, error: 'Notion 已有此錄音的紀錄' };
+  }
+  // 同一個檔有好幾筆待重試／失敗（舊版重試按鈕留下的）→ 只重跑一筆，其餘封存，免得之後各轉一次
+  const [target, ...extra] = pages;
+  for (const p of extra) {
+    try { await archiveNotionPage(env, p.id); } catch (e) { console.warn(`[queue] 封存重複 ${p.id} 失敗: ${e.message}`); }
+  }
+  const ok = await rerunPage(env, target, 0, '手動重試');
+  return { success: ok, heavy: true, notionId: target.id, error: ok ? null : '重試失敗（已記錄在 Notion）' };
 }
 
 // cron 統一處理入口（KV 排隊 + 自動掃描共用）：dedup → 建 placeholder → processAudio
@@ -2749,10 +2805,10 @@ async function retryOnePending(env) {
 //   2. 永久失敗的檔在 Notion 有紀錄（含錄音連結）→ 掃描 dedup 自動跳過 → 不再無限重掃
 //   3. 重試計數統一由 sweeper 管理
 // 回傳 { heavy }：true = 真的跑了 Gemini pipeline（呼叫端應計入 quota，不論成敗，保護 subrequest 預算）
-async function processWithPlaceholder(env, fileId) {
+async function processWithPlaceholder(env, fileId, opts) {
   // dedup：Notion 已有任何此 fileId 的 entry（含待重試/失敗）→ skip
-  // 待重試的交給 sweeper，永久失敗的不再重跑
-  if (await isAudioAlreadyProcessed(env, fileId)) {
+  // 待重試的交給 sweeper，永久失敗的不再重跑（opts.skipDedup：呼叫端剛查過）
+  if (!(opts && opts.skipDedup) && await isAudioAlreadyProcessed(env, fileId)) {
     return { success: false, heavy: false, error: 'Notion 已有此錄音的紀錄' };
   }
   const fileMeta = await getDriveFileMeta(env, fileId);
@@ -2804,7 +2860,7 @@ async function runDailyProcess(env, opts) {
         try {
           // 統一走 placeholder：失敗會在 Notion 留「待重試」紀錄（sweeper 接手），
           // 所以下面無條件刪 KV key 是安全的，不再無聲消失
-          const r = await processWithPlaceholder(env, item.fileId);
+          const r = await processQueuedFile(env, item.fileId);
           if (r.success) {
             console.log(`[daily] [KV] ✓ ${item.fileId} → ${r.notionId}`);
             results.push({ fileId: item.fileId, ok: true, notionId: r.notionId, source: 'kv' });
