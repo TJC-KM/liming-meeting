@@ -40,7 +40,7 @@ const TYPE_TIMES = {
 export default {
   // 每日排程：處理近 2 天上傳、Notion 還沒紀錄的音檔
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runDailyProcess(env));
+    ctx.waitUntil(runDailyProcess(env, { allowRetry: RETRY_CRONS.includes(event.cron) }));
   },
 
   async fetch(request, env, ctx) {
@@ -310,7 +310,7 @@ export default {
           ctx.waitUntil(
             processAudio(env, payload, pageId).catch(async (e) => {
               console.error('[processAudio bg]', e.message);
-              await markForRetry(env, pageId, 1, e.message).catch(() => {});
+              await markAfterFailure(env, pageId, 1, e).catch(() => {});
             })
           );
           return cors(json({ success: true, queued: true, notionId: pageId }), origin);
@@ -448,6 +448,40 @@ function isAutoSkip(name, keywords) {
   return keywords.some(k => name.includes(k));
 }
 
+// 檔案大小超出範圍的錄音：網站照常顯示（可播放），cron 不自動轉。
+//   上限：Worker 記憶體只有 128MB，大檔是前後各下載 55% 再分段丟 Gemini。
+//         成功過最大的是 135.7MB，160MB 就卡死在「AI 分析中（後半）」。
+//         2023 年有一批 400～1100MB 的錄音，自動轉只會連續失敗 3 次、白佔 cron 名額。
+//   下限：<1MB 不到一分鐘，轉出來幾乎是空的（2026-09-11 一份 0.4MB 的重複上傳就是這樣）。
+// Config Sheet 的 max_auto_size_mb / min_auto_size_mb 可覆寫。
+const DEFAULT_MAX_AUTO_SIZE_MB = 150;
+const DEFAULT_MIN_AUTO_SIZE_MB = 1;
+
+async function getMaxAutoSizeMB(env) {
+  const v = parseFloat(await getConfigValue(env, 'max_auto_size_mb', String(DEFAULT_MAX_AUTO_SIZE_MB)));
+  return isNaN(v) ? DEFAULT_MAX_AUTO_SIZE_MB : v;
+}
+
+async function getAutoSkipRules(env) {
+  const minMB = parseFloat(await getConfigValue(env, 'min_auto_size_mb', String(DEFAULT_MIN_AUTO_SIZE_MB)));
+  return {
+    keywords: await getAutoSkipKeywords(env),
+    maxMB: await getMaxAutoSizeMB(env),
+    minMB: isNaN(minMB) ? DEFAULT_MIN_AUTO_SIZE_MB : minMB,
+  };
+}
+
+// 回傳「為什麼不自動轉」，null = 可以自動轉。file 要有 name，size（bytes，Drive 回的是字串）可缺。
+function autoSkipReason(file, rules) {
+  if (isAutoSkip(file.name, rules.keywords)) return '非講道錄音';
+  if (file.size != null && file.size !== '') {
+    const mb = Number(file.size) / 1024 / 1024;
+    if (mb > rules.maxMB) return `檔案過大（${mb.toFixed(0)}MB）`;
+    if (mb < rules.minMB) return `檔案過小（${mb.toFixed(1)}MB）`;
+  }
+  return null;
+}
+
 // 切割門檻：超過此 byte 數的 MP3 會自動切兩半各跑 Gemini，再合併
 // 經驗值：25 MB MP3 ≈ 50-60 分鐘，是 Gemini free tier 的安全上限
 // 切割閾值預設 25MB（約 60 分鐘 128kbps mp3），可被 Config Sheet 的 split_threshold_mb 覆寫
@@ -482,14 +516,16 @@ async function listDriveFiles(env, year, month) {
     throw new Error(`Drive list 失敗 ${res.status}: ${txt.substring(0, 300)}`);
   }
   const data = await res.json();
-  const skipKeywords = await getAutoSkipKeywords(env);
+  const skipRules = await getAutoSkipRules(env);
 
   const files = (data.files || [])
     .filter(f => isAudioFile(f.name))
     .map(f => {
       const parsed = parseFilename(f.name, f.createdTime);
+      const skipReason = autoSkipReason(f, skipRules);
       return {
-        autoSkip: isAutoSkip(f.name, skipKeywords),
+        autoSkip: !!skipReason,
+        autoSkipReason: skipReason,
         id: f.id,
         name: f.name,
         sizeMB: f.size ? +(f.size / 1024 / 1024).toFixed(1) : null,
@@ -1352,6 +1388,13 @@ async function markForRetry(env, pageId, attemptsSoFar, errorMsg) {
       console.warn(`[retry] ${pageId.substring(0,8)} mark 待重試失敗: ${e.message}`);
     }
   }
+}
+
+// processAudio 失敗後的統一出口：e.permanent（例如檔案過大）重試也不會好 → 直接標「失敗」，
+// 不佔 cron 重試名額；其他錯誤照常進「待重試」。
+async function markAfterFailure(env, pageId, attemptsSoFar, e) {
+  if (e && e.permanent) return markPageFailed(env, pageId, e.message);
+  return markForRetry(env, pageId, attemptsSoFar, e ? e.message : '');
 }
 
 // 補上內文 + 最終屬性（簡易重點、轉檔時間、狀態=草稿），placeholder pattern 的收尾
@@ -2590,8 +2633,9 @@ async function handleStudySync(env, limit) {
 // - 失敗不算進 quota，下次 cron 會再試
 // cron sweeper：先清卡死、再重跑一個待重試項目
 // 回傳 true = 本輪 cron 已用掉預算做重試（呼叫端應跳過新檔處理，避免一次 invocation 做太多事爆 subrequest）
-async function sweepAndRetryOne(env) {
-  // 1. 偵測卡死：in-flight 狀態 + 最後編輯 >15 分鐘前 → 視為 waitUntil 被 CF kill，改標待重試
+// 偵測卡死：in-flight 狀態 + 最後編輯 >15 分鐘前 → 視為 waitUntil 被 CF kill，改標待重試。
+// 每輪 cron 都跑（很便宜，1 個 subrequest），不管這輪能不能做重試。
+async function detectStuckPages(env) {
   const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
   try {
     const stuck = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
@@ -2622,29 +2666,46 @@ async function sweepAndRetryOne(env) {
   } catch (e) {
     console.warn('[sweep] 偵測卡死失敗:', e.message);
   }
+}
 
-  // 2. 撈最舊的一個待重試項目（1/3 或 2/3）
-  let retryPage;
-  try {
-    const q = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
-      method: 'POST',
-      body: JSON.stringify({
-        filter: { or: [
-          { property: '狀態', select: { equals: `待重試 1/${MAX_PROCESS_ATTEMPTS}` } },
-          { property: '狀態', select: { equals: `待重試 2/${MAX_PROCESS_ATTEMPTS}` } },
-        ] },
-        sorts: [{ timestamp: 'last_edited_time', direction: 'ascending' }],
-        page_size: 1,
-      }),
-    });
-    retryPage = (q.results || [])[0];
-  } catch (e) {
-    console.warn('[sweep] 撈待重試失敗:', e.message);
-    return false;
+// 找下一個要重試的：聚會日期最新的「待重試 N/3」。
+//
+// ⚠️ 每個狀態分開查，不能用一個 or 查詢。Notion 對「select 選項不存在」的過濾會整個回 400，
+//    而「待重試 2/3」這個選項要等第一次重試失敗才會被自動建立 —— 合在一起查的話，
+//    查詢永遠失敗 → 永遠沒有重試 → 永遠建不出 2/3，死結。
+//    2026-06～09 就是這樣：54 筆卡在「待重試 1/3」兩個多月，一次都沒被重試過。
+//
+// 為什麼挑聚會日期最新的：舊錄音的重試可能積一大串，新的主日講道失敗時不該排在它們後面。
+// 同一份連續失敗最多 3 次就會轉「失敗」，不會一直插隊。
+async function findNextRetryPage(env) {
+  let best = null;
+  for (let n = 1; n < MAX_PROCESS_ATTEMPTS; n++) {
+    const status = `待重試 ${n}/${MAX_PROCESS_ATTEMPTS}`;
+    try {
+      const q = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
+        method: 'POST',
+        body: JSON.stringify({
+          filter: { property: '狀態', select: { equals: status } },
+          sorts: [{ property: '聚會日期', direction: 'descending' }],
+          page_size: 1,
+        }),
+      });
+      const p = (q.results || [])[0];
+      const dateOf = (pg) => pg?.properties?.['聚會日期']?.date?.start || '';
+      if (p && (!best || dateOf(p) > dateOf(best))) best = p;
+    } catch (e) {
+      console.warn(`[sweep] 查「${status}」失敗（選項還不存在時正常，視為 0 筆）: ${e.message}`);
+    }
   }
+  return best;
+}
+
+// 重試一筆待重試項目。回傳 true = 這輪做了重活（呼叫端不該再處理別的檔）。
+async function retryOnePending(env) {
+  const retryPage = await findNextRetryPage(env);
   if (!retryPage) return false;  // 沒有待重試項目 → cron 去處理新檔
 
-  // 3. 重跑（這就是「全新 invocation 的全新預算」—— 跟原本失敗時是不同次 worker 執行）
+  // 重跑（這就是「全新 invocation 的全新預算」—— 跟原本失敗時是不同次 worker 執行）
   const status = retryPage.properties?.['狀態']?.select?.name || '';
   const attempts = parseAttemptCount(status);  // 已失敗次數
   const audioUrl = retryPage.properties?.['錄音檔連結']?.url || '';
@@ -2676,7 +2737,7 @@ async function sweepAndRetryOne(env) {
     console.log(`[sweep] ✓ 重試成功 ${retryPage.id.substring(0,8)}`);
   } catch (e) {
     console.error(`[sweep] ✗ 重試失敗 ${retryPage.id.substring(0,8)}: ${e.message}`);
-    await markForRetry(env, retryPage.id, attempts + 1, e.message);
+    await markAfterFailure(env, retryPage.id, attempts + 1, e);
   }
   return true;
 }
@@ -2705,27 +2766,30 @@ async function processWithPlaceholder(env, fileId) {
     const r = await processAudio(env, { fileId }, pageId);
     return Object.assign({ heavy: true }, r);
   } catch (e) {
-    await markForRetry(env, pageId, 1, e.message).catch(() => {});
+    await markAfterFailure(env, pageId, 1, e).catch(() => {});
     return { success: false, heavy: true, error: e.message, notionId: pageId };
   }
 }
 
-async function runDailyProcess(env) {
+// 哪幾個 cron 時段可以做重試（其他時段新檔優先）。
+//
+// 為什麼要分：重試原本排在每輪最前面，但待重試一積多（例如一次 54 筆），
+// 新上傳的主日講道就要等好幾週。依 Drive 實際上傳時間：週六上午的錄音在 12:30 那輪出現、
+// 下午的在 16:00、週二／週五晚上的在 21:30，06:30 那輪幾乎沒有新檔。
+// 所以 06:30、16:00 先重試，12:30、21:30 新檔優先 —— 週六兩場都還能當天轉完。
+// 改 wrangler.toml 的 crons 時這裡要一起改。
+const RETRY_CRONS = ['30 22 * * *', '0 8 * * *'];   // 台北 06:30、16:00
+
+// opts.allowRetry：這輪可不可以做重試（cron 依時段決定；/admin/run-daily 預設可以）
+async function runDailyProcess(env, opts) {
+  const allowRetry = !opts || opts.allowRetry !== false;
   const QUOTA = parseInt(env.QUOTA_PER_RUN || '5', 10);
-  console.log(`[daily] start at ${new Date().toISOString()}, quota=${QUOTA}`);
+  console.log(`[daily] start at ${new Date().toISOString()}, quota=${QUOTA}, allowRetry=${allowRetry}`);
 
-  // ⭐ 優先處理重試：卡死清理 + 重跑一個待重試項目。有做重試就跳過新檔（一次 cron 只做一件重活）
-  try {
-    const didRetry = await sweepAndRetryOne(env);
-    if (didRetry) {
-      console.log('[daily] 本輪用於重試，跳過新檔處理');
-      return { mode: 'retry' };
-    }
-  } catch (e) {
-    console.warn('[daily] sweep 階段出錯，繼續處理新檔:', e.message);
-  }
+  // 卡死救援每輪都做（只是改狀態，不算重活）
+  await detectStuckPages(env);
 
-  // ⭐ 優先處理手動排隊的 KV 項目
+  // ⭐ 優先處理手動排隊的 KV 項目（人明確按了「加入排隊」，排在自動重試前面）
   let processed = 0;
   const results = [];
   if (env.PROCESS_QUEUE) {
@@ -2766,6 +2830,18 @@ async function runDailyProcess(env) {
     return { quota: QUOTA, processed, results };
   }
 
+  // ⭐ 重試（只在 RETRY_CRONS 時段）。有做重試就跳過新檔（一次 cron 只做一件重活）
+  if (allowRetry && processed === 0) {
+    try {
+      if (await retryOnePending(env)) {
+        console.log('[daily] 本輪用於重試，跳過新檔處理');
+        return { mode: 'retry' };
+      }
+    } catch (e) {
+      console.warn('[daily] 重試階段出錯，繼續處理新檔:', e.message);
+    }
+  }
+
   let candidates;
   try {
     candidates = await listAllAudioCandidates(env);
@@ -2789,12 +2865,20 @@ async function runDailyProcess(env) {
   }
 
   // 過濾未處理 + 排序（今天上傳的優先，其他依檔名 desc）
-  const skipKeywords = await getAutoSkipKeywords(env);
-  const skipped = candidates.filter(f => !processedFileIds.has(f.id) && isAutoSkip(f.name, skipKeywords));
-  if (skipped.length) console.log(`[daily] 非講道錄音不自動轉檔 ${skipped.length} 個（AUTO_SKIP_KEYWORDS）`);
+  const skipRules = await getAutoSkipRules(env);
+  const skipCounts = {};
+  candidates.forEach(f => {
+    if (processedFileIds.has(f.id)) return;
+    f.skipReason = autoSkipReason(f, skipRules);
+    if (f.skipReason) {
+      const k = f.skipReason.replace(/（.*$/, '');
+      skipCounts[k] = (skipCounts[k] || 0) + 1;
+    }
+  });
+  if (Object.keys(skipCounts).length) console.log(`[daily] 不自動轉檔：${JSON.stringify(skipCounts)}`);
 
   const unprocessed = candidates
-    .filter(f => !processedFileIds.has(f.id) && !isAutoSkip(f.name, skipKeywords))
+    .filter(f => !processedFileIds.has(f.id) && !f.skipReason)
     .sort((a, b) => {
       if (a.uploadedToday !== b.uploadedToday) return a.uploadedToday ? -1 : 1;
       // 依「解析出的日期」新到舊，不是檔名字串 ——
@@ -2893,6 +2977,8 @@ async function processOneNewStudyDoc(env) {
   return null;
 }
 
+const DRIVE_LIST_MAX_PAGES = 5;   // × 1000 個音檔
+
 // 列出所有候選音檔（已解析檔名 + 今天上傳旗標）
 //
 // 改用「副檔名 OR」當 Drive query 篩選，不用 'folder in parents'
@@ -2904,17 +2990,30 @@ async function listAllAudioCandidates(env) {
   // Drive query 支援 OR：篩出所有副檔名屬於音檔的
   const extQ = AUDIO_EXTS.map(ext => `name contains '${ext}'`).join(' or ');
   const q = `(${extQ}) and trashed = false`;
-  const url = `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id,name,size,createdTime,mimeType,parents)&pageSize=500&supportsAllDrives=true&includeItemsFromAllDrives=true&orderBy=name desc`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) {
-    throw new Error(`Drive list ${res.status}: ${(await res.text()).substring(0, 200)}`);
+  const baseUrl = `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=nextPageToken,files(id,name,size,createdTime,mimeType,parents)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&orderBy=name desc`;
+
+  // 一定要翻頁：以前只拿第一頁（pageSize=500），2026-09 Drive 有 1,396 個音檔，
+  // 依檔名倒序排在 500 名以後的（約 2024-07 以前）cron 永遠看不到。每頁 1 個 subrequest。
+  let all = [];
+  let pageToken = '';
+  for (let page = 0; page < DRIVE_LIST_MAX_PAGES; page++) {
+    const res = await fetch(baseUrl + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''),
+                            { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      throw new Error(`Drive list ${res.status}: ${(await res.text()).substring(0, 200)}`);
+    }
+    const data = await res.json();
+    all = all.concat(data.files || []);
+    pageToken = data.nextPageToken || '';
+    if (!pageToken) break;
+    if (page === DRIVE_LIST_MAX_PAGES - 1) {
+      console.warn(`[daily] ⚠️ Drive 音檔超過 ${DRIVE_LIST_MAX_PAGES} 頁（${all.length} 個），其餘這輪看不到`);
+    }
   }
-  const data = await res.json();
 
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
 
-  const all = data.files || [];
   console.log(`[daily] Drive 回傳 ${all.length} 個音檔（副檔名篩選）`);
 
   const candidates = all
@@ -3034,6 +3133,17 @@ async function processAudio(env, payload, pageId) {
     // === Step 3: 決定切割策略（依 metadata size 判斷，先不下載）===
     const mimeType = fileMeta.mimeType || 'audio/mpeg';
     const fileSize = parseInt(fileMeta.size, 10) || 0;
+
+    // 大小守門：這兩種重試幾次都不會好 → permanent，直接標「失敗」不進重試（見 markAfterFailure）。
+    // 自動掃描已經會跳過它們，這裡擋的是手動排隊／立即重試。
+    const maxMB = await getMaxAutoSizeMB(env);
+    if (fileSize === 0 || fileSize > maxMB * 1024 * 1024) {
+      const err = new Error(fileSize === 0
+        ? '錄音檔是空的（0MB），請確認 Drive 上的檔案是否上傳完整'
+        : `錄音檔太大（${sizeMB}MB，上限 ${maxMB}MB），系統無法處理。請壓縮成較小的 mp3（64～128kbps）後重新上傳`);
+      err.permanent = true;
+      throw err;
+    }
 
     // 切割閾值從 Config Sheet 讀（MB），預設 25
     const thresholdMB = parseFloat(await getConfigValue(env, 'split_threshold_mb', '25'));
