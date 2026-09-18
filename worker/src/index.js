@@ -56,8 +56,19 @@ export default {
 
     try {
       // -- Notion proxy --
+      // /meetings?from=YYYY-MM-DD&to=YYYY-MM-DD → 只查該區間（前端依目前檢視的月份／週／年載入）
+      // 不帶參數 → 全部（cron 的錄音 dedup、舊版前端用）
       if (path === '/meetings' && request.method === 'GET') {
-        return cors(json(await listMeetings(env)), origin);
+        const from = params.get('from'), to = params.get('to');
+        const range = (from || to) ? { from, to } : null;
+        if (range && !(/^\d{4}-\d{2}-\d{2}$/.test(from || '') && /^\d{4}-\d{2}-\d{2}$/.test(to || ''))) {
+          return cors(json({ error: 'from / to 需為 YYYY-MM-DD' }, 400), origin);
+        }
+        return cors(json(await listMeetings(env, range)), origin);
+      }
+      // 全部紀錄的 fileId 清單（前端去重用，輕量 + KV 快取），見 getMeetingsIndex
+      if (path === '/meetings/index' && request.method === 'GET') {
+        return cors(json(await getMeetingsIndex(env)), origin);
       }
       const meetingMatch = path.match(/^\/meetings\/([0-9a-f-]{32,36})$/i);
       if (meetingMatch && request.method === 'GET') {
@@ -421,6 +432,20 @@ async function signJWT(input, key) {
 
 const AUDIO_EXTS = ['.mp3', '.m4a', '.wav', '.ogg', '.aac'];
 
+// 非講道錄音：網站照常顯示，但 cron 不自動轉檔（婚禮、喪禮、詩班練習…不需要 AI 整理重點）。
+// 使用者在 meeting 頁手動按「加入轉錄排隊」仍然會轉 —— 只擋自動，不擋人的明確決定。
+// Config Sheet 的 AUTO_SKIP_KEYWORDS（逗號分隔）可覆寫，改完不用重新部署。
+const DEFAULT_AUTO_SKIP_KEYWORDS = '婚禮,喪禮,告別式,詩班,敬老會,聖餐禮,洗腳禮,信徒會議';
+
+async function getAutoSkipKeywords(env) {
+  const raw = await getConfigValue(env, 'AUTO_SKIP_KEYWORDS', DEFAULT_AUTO_SKIP_KEYWORDS);
+  return raw.split(/[,，、;；\n]/).map(s => s.trim()).filter(Boolean);
+}
+
+function isAutoSkip(name, keywords) {
+  return keywords.some(k => name.includes(k));
+}
+
 // 切割門檻：超過此 byte 數的 MP3 會自動切兩半各跑 Gemini，再合併
 // 經驗值：25 MB MP3 ≈ 50-60 分鐘，是 Gemini free tier 的安全上限
 // 切割閾值預設 25MB（約 60 分鐘 128kbps mp3），可被 Config Sheet 的 split_threshold_mb 覆寫
@@ -455,12 +480,14 @@ async function listDriveFiles(env, year, month) {
     throw new Error(`Drive list 失敗 ${res.status}: ${txt.substring(0, 300)}`);
   }
   const data = await res.json();
+  const skipKeywords = await getAutoSkipKeywords(env);
 
   const files = (data.files || [])
     .filter(f => isAudioFile(f.name))
     .map(f => {
       const parsed = parseFilename(f.name, f.createdTime);
       return {
+        autoSkip: isAutoSkip(f.name, skipKeywords),
         id: f.id,
         name: f.name,
         sizeMB: f.size ? +(f.size / 1024 / 1024).toFixed(1) : null,
@@ -1194,6 +1221,12 @@ async function notionFetch(env, path, init) {
     const txt = await res.text();
     throw new Error(`Notion API ${res.status}: ${txt.substring(0, 300)}`);
   }
+  // 新增紀錄、封存紀錄 → 前端去重用的 fileId 索引過期了，清掉讓下次重建
+  const method = opts.method || 'GET';
+  if ((method === 'POST' && path === '/pages') ||
+      (method === 'PATCH' && /^\/pages\//.test(path) && /"archived"\s*:\s*true/.test(opts.body || ''))) {
+    await invalidateMeetingsIndex(env);
+  }
   return res.json();
 }
 
@@ -1365,8 +1398,17 @@ async function finalizePageWithContent(env, pageId, markdown, processingInfo) {
 //    已經吃掉不少預算，逼近時要改成加 filter 或分頁 API。
 const LIST_MEETINGS_MAX_PAGES = 20;
 
-async function listMeetings(env) {
+async function listMeetings(env, range) {
   const body = { sorts: [{ property: '聚會日期', direction: 'descending' }], page_size: 100 };
+  if (range) {
+    // to 當天要包含在內 → 用「before 隔天」，避免 on_or_before 遇到有時間的日期時邊界不明確
+    const next = new Date(`${range.to}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    body.filter = { and: [
+      { property: '聚會日期', date: { on_or_after: range.from } },
+      { property: '聚會日期', date: { before: next.toISOString().slice(0, 10) } },
+    ] };
+  }
   let allResults = [];
   let cursor;
   let truncated = false;
@@ -1387,6 +1429,52 @@ async function listMeetings(env) {
                  `，仍有更多資料未讀取。請提高 LIST_MEETINGS_MAX_PAGES 或改用 filter。`);
   }
   return { meetings: allResults.map(transformPage) };
+}
+
+// === 前端去重用的 fileId 索引 ===
+//
+// 為什麼需要：前端改成「只載入目前檢視的月份」之後，去重不能只看當月的 Notion 紀錄 ——
+// 預查的推估日期（createdTime）常跟 Notion 上的真實日期不同月（例如 101 份推估在
+// 2026-04-08、實際在 2023 年），只比對當月會讓它們重新冒出來變成「待處理」。
+// 錄音也一樣：有人在 Notion 改過日期的話，檔案跟紀錄就不在同一個月了。
+//
+// 讀全部 Notion 很慢（500+ 筆約 5 秒），所以結果放 KV 快取；有新增／封存紀錄時清掉
+//（見 notionFetch），手動在 Notion 改東西則最多 10 分鐘後更新。
+const MEETINGS_INDEX_KEY = 'cache:meetings-index';
+const MEETINGS_INDEX_TTL_SEC = 600;
+
+function fileIdFromUrl(u) {
+  const m = String(u || '').match(/\/d\/([^/?#]+)/);
+  return m ? m[1] : null;
+}
+
+async function getMeetingsIndex(env) {
+  if (env.PROCESS_QUEUE) {
+    try {
+      const cached = await env.PROCESS_QUEUE.get(MEETINGS_INDEX_KEY, 'json');
+      if (cached) return Object.assign({ cached: true }, cached);
+    } catch (e) { console.warn('[index] KV 讀取失敗:', e.message); }
+  }
+  const { meetings } = await listMeetings(env);
+  const index = {
+    audio: meetings.map(m => fileIdFromUrl(m.audioUrl)).filter(Boolean),
+    study: meetings.map(m => fileIdFromUrl(m.studyUrl)).filter(Boolean),
+    count: meetings.length,
+    builtAt: new Date().toISOString(),
+  };
+  if (env.PROCESS_QUEUE) {
+    try {
+      await env.PROCESS_QUEUE.put(MEETINGS_INDEX_KEY, JSON.stringify(index),
+                                  { expirationTtl: MEETINGS_INDEX_TTL_SEC });
+    } catch (e) { console.warn('[index] KV 寫入失敗:', e.message); }
+  }
+  return Object.assign({ cached: false }, index);
+}
+
+async function invalidateMeetingsIndex(env) {
+  if (!env.PROCESS_QUEUE) return;
+  try { await env.PROCESS_QUEUE.delete(MEETINGS_INDEX_KEY); }
+  catch (e) { console.warn('[index] KV 清除失敗:', e.message); }
 }
 
 async function getMeeting(env, id) {
@@ -2699,8 +2787,12 @@ async function runDailyProcess(env) {
   }
 
   // 過濾未處理 + 排序（今天上傳的優先，其他依檔名 desc）
+  const skipKeywords = await getAutoSkipKeywords(env);
+  const skipped = candidates.filter(f => !processedFileIds.has(f.id) && isAutoSkip(f.name, skipKeywords));
+  if (skipped.length) console.log(`[daily] 非講道錄音不自動轉檔 ${skipped.length} 個（AUTO_SKIP_KEYWORDS）`);
+
   const unprocessed = candidates
-    .filter(f => !processedFileIds.has(f.id))
+    .filter(f => !processedFileIds.has(f.id) && !isAutoSkip(f.name, skipKeywords))
     .sort((a, b) => {
       if (a.uploadedToday !== b.uploadedToday) return a.uploadedToday ? -1 : 1;
       // 依「解析出的日期」新到舊，不是檔名字串 ——

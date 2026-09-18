@@ -16,13 +16,23 @@ const CONFIG = {
 
 // === Notion 端（Worker proxy）===
 const api = {
-  async listMeetings() {
+  // range = { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' } → 只查該區間（快）
+  // 不帶 range → 全部（慢，600+ 筆約 3~5 秒，前端不要再用）
+  async listMeetings(range) {
     if (CONFIG.USE_MOCK) {
       const r = await fetch('./mock-data.json');
       if (!r.ok) throw new Error('讀取 mock 資料失敗');
       return r.json();
     }
-    const r = await fetch(`${CONFIG.API_URL}/meetings`);
+    const qs = range ? `?from=${range.from}&to=${range.to}` : '';
+    const r = await fetch(`${CONFIG.API_URL}/meetings${qs}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`Worker 錯誤：${r.status}`);
+    return r.json();
+  },
+
+  // 全部 Notion 紀錄的 fileId（{ audio: [...], study: [...] }）—— 去重用，Worker 端有快取
+  async meetingsIndex() {
+    const r = await fetch(`${CONFIG.API_URL}/meetings/index`, { cache: 'no-store' });
     if (!r.ok) throw new Error(`Worker 錯誤：${r.status}`);
     return r.json();
   },

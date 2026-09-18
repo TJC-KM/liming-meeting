@@ -20,7 +20,8 @@ const WEEKDAY_FILTERS = [
 ];
 
 var state = {
-  notionMeetings: [],
+  notionMeetings: [],       // 目前已載入月份的 Notion 紀錄（依檢視範圍按月載入，見 loadNotionForMonths）
+  index: null,              // 全部 Notion 紀錄的 fileId：{ audio: Set, study: Set }，去重用；null = 還沒載入
   driveFiles: [],
   studyDocs: [],            // 所有預查文件（一次性載入，含估計日期）
   filter: 'all',
@@ -111,37 +112,105 @@ function init() {
   loadInitial();
 }
 
+// === Notion 紀錄：依檢視範圍「按月」載入 ===
+//
+// 以前打開網站就一次讀完全部 Notion（600+ 筆、575 KB、3~5 秒），而且筆數越多越慢。
+// 現在只載入目前檢視的月份（單月約 12 KB、0.7 秒），切換月份時才載入。
+// 每個 Drive 載入函式（loadDriveForMonth / Week / Year）都會順便載入同範圍的 Notion，
+// 所以任何切換檢視的路徑都涵蓋到了。
+//
+// ⚠️ 去重不能只看已載入的月份（預查的推估日期常跟真實日期不同月）→ 另外載入全部的
+//    fileId 索引（loadMeetingsIndex），索引到之前不顯示「待轉錄／待處理」，避免閃出假的待辦。
+const NOTION_MONTH_TTL_MS = 2 * 60 * 1000;
+const notionByMonth = {};   // 'YYYY-MM' → { t, meetings }
+
+function monthKey(y, m0) { return y + '-' + pad2(m0 + 1); }
+
+function enrichMeeting(m) {
+  const d = formatDate(m.date);
+  return Object.assign({}, m, {
+    year: d.y, month: d.m, day: d.d, dow: d.dow,
+    dateKey: m.date ? m.date.substring(0, 10) : '',
+  });
+}
+
+// months: [{ y, m }]（m 是 0-based）
+async function loadNotionForMonths(months, force) {
+  const now = Date.now();
+  const need = months.filter(function (x) {
+    const c = notionByMonth[monthKey(x.y, x.m)];
+    return force || !c || now - c.t > NOTION_MONTH_TTL_MS;
+  });
+  if (need.length === 0) return;
+
+  need.sort(function (a, b) { return a.y - b.y || a.m - b.m; });
+  const first = need[0], last = need[need.length - 1];
+  const from = first.y + '-' + pad2(first.m + 1) + '-01';
+  const to = last.y + '-' + pad2(last.m + 1) + '-' + pad2(new Date(last.y, last.m + 1, 0).getDate());
+  const result = await api.listMeetings({ from: from, to: to });
+
+  // 區間內每個月都用這次結果更新（也涵蓋 need 之間原本有快取的月份）
+  const buckets = {};
+  for (let y = first.y, m = first.m; y < last.y || (y === last.y && m <= last.m);) {
+    buckets[monthKey(y, m)] = [];
+    if (++m > 11) { m = 0; y++; }
+  }
+  (result.meetings || []).forEach(function (raw) {
+    const k = raw.date ? raw.date.substring(0, 7) : null;
+    if (k && buckets[k]) buckets[k].push(enrichMeeting(raw));
+  });
+  Object.keys(buckets).forEach(function (k) { notionByMonth[k] = { t: now, meetings: buckets[k] }; });
+  state.notionMeetings = [].concat.apply([], Object.keys(notionByMonth).map(function (k) {
+    return notionByMonth[k].meetings;
+  }));
+}
+
+function loadNotionForView(months, force) {
+  return loadNotionForMonths(months, force)
+    .then(function () { state.loading = false; render(); })
+    .catch(function (e) {
+      console.warn('[notion] 載入失敗:', e.message);
+      if (state.loading) {
+        state.loading = false;
+        document.getElementById('root').innerHTML = '<div class="empty">載入失敗：' + e.message + '</div>';
+      }
+    });
+}
+
+async function loadMeetingsIndex() {
+  try {
+    const r = await api.meetingsIndex();
+    state.index = { audio: new Set(r.audio || []), study: new Set(r.study || []) };
+  } catch (e) {
+    // 索引失敗就退回「只用已載入月份去重」，至少不會整個待辦都不見
+    console.warn('[index] 載入失敗，改用已載入月份的紀錄去重:', e.message);
+    state.index = { audio: new Set(), study: new Set(), failed: true };
+  }
+  render();
+}
+
 async function loadInitial() {
   state.loading = true;
   render();
 
-  try {
-    const result = await api.listMeetings();
-    state.notionMeetings = (result.meetings || []).map(function (m) {
-      const d = formatDate(m.date);
-      return Object.assign({}, m, {
-        year: d.y, month: d.m, day: d.d, dow: d.dow,
-        dateKey: m.date ? m.date.substring(0, 10) : '',
-      });
-    });
+  // 預設選擇當月（週視圖則是本週）
+  const now = new Date();
+  state.sy = now.getFullYear();
+  state.sm = now.getMonth();
 
-    // 預設選擇當月
-    const now = new Date();
-    state.sy = now.getFullYear();
-    state.sm = now.getMonth();
-    state.loading = false;
-    render();
-
-    // 背景並行載入：當月 Drive 錄音 + 所有預查文件
+  // 並行載入：本期間的 Notion 紀錄 + Drive 錄音、全部 fileId 索引、所有預查文件
+  if (state.view === 'week') {
+    state.weekDate = getWeekStart(now);
+    loadDriveForWeek(state.weekDate);
+  } else {
     loadDriveForMonth(state.sy, state.sm);
-    loadStudyDocs();
-  } catch (err) {
-    state.loading = false;
-    document.getElementById('root').innerHTML = '<div class="empty">載入失敗：' + err.message + '</div>';
   }
+  loadMeetingsIndex();
+  loadStudyDocs();
 }
 
-async function loadDriveForMonth(year, month0) {
+async function loadDriveForMonth(year, month0, forceNotion) {
+  loadNotionForView([{ y: year, m: month0 }], forceNotion);
   if (!gasApi.enabled()) return;
 
   const m1 = month0 + 1;
@@ -190,9 +259,7 @@ async function loadStudyDocs() {
 }
 
 // 載入一週可能跨到的月份的 Drive 檔案（1~2 個月）
-async function loadDriveForWeek(sundayDate) {
-  if (!gasApi.enabled()) return;
-
+async function loadDriveForWeek(sundayDate, forceNotion) {
   const startY = sundayDate.getFullYear();
   const startM = sundayDate.getMonth();
   const endDate = addDays(sundayDate, 6);
@@ -201,6 +268,9 @@ async function loadDriveForWeek(sundayDate) {
 
   const months = [{ y: startY, m: startM }];
   if (startY !== endY || startM !== endM) months.push({ y: endY, m: endM });
+
+  loadNotionForView(months, forceNotion);
+  if (!gasApi.enabled()) return;
 
   state.loadingDrive = true;
   state.driveError = null;
@@ -226,7 +296,10 @@ async function loadDriveForWeek(sundayDate) {
   }
 }
 
-async function loadDriveForYear(year) {
+async function loadDriveForYear(year, forceNotion) {
+  const months = [];
+  for (let m = 0; m < 12; m++) months.push({ y: year, m: m });
+  loadNotionForView(months, forceNotion);
   if (!gasApi.enabled()) return;
 
   state.loadingDrive = true;
@@ -349,13 +422,17 @@ function attachEntries(days) {
     dayObj.items.push(Object.assign({}, m, { _state: 'filled' }));
   });
 
+  // L2 / L3 的去重需要「全部」Notion 的 fileId（index），不能只看已載入的月份。
+  // index 還沒到之前先不顯示待辦，避免閃出一堆其實已經轉過的「待轉錄／待處理」。
+  if (!state.index) return;
+
   // Layer 2：Drive 錄音 → 已在 Notion 的 fileId 就跳過，否則新增 pending
-  const notionAudioFileIds = new Set(
-    state.notionMeetings.filter(m => m.audioUrl).map(m => {
-      const match = m.audioUrl.match(/\/d\/([^/]+)/);
-      return match ? match[1] : null;
-    }).filter(Boolean)
-  );
+  // 集合 = 全部紀錄的索引 ∪ 已載入月份（剛轉完、索引還沒更新的也算）
+  const notionAudioFileIds = new Set(state.index.audio);
+  state.notionMeetings.forEach(function (m) {
+    const match = m.audioUrl && m.audioUrl.match(/\/d\/([^/]+)/);
+    if (match) notionAudioFileIds.add(match[1]);
+  });
   state.driveFiles.forEach(function (f) {
     if (!f.date || !f.topic) return;
     if (notionAudioFileIds.has(f.id)) return;
@@ -377,12 +454,11 @@ function attachEntries(days) {
   //    filled / pending 項目上根本不會被畫出來，等於默默吃掉一份文件。
   //    （topic/speaker 的 studyDoc 備援也不會觸發：既然是 topic 相同才合併，
   //     那個項目本來就有 topic。）拿掉後每份未轉檔文件都看得見。
-  const notionStudyFileIds = new Set(
-    state.notionMeetings.filter(m => m.studyUrl).map(m => {
-      const match = m.studyUrl.match(/\/d\/([^/]+)/);
-      return match ? match[1] : null;
-    }).filter(Boolean)
-  );
+  const notionStudyFileIds = new Set(state.index.study);
+  state.notionMeetings.forEach(function (m) {
+    const match = m.studyUrl && m.studyUrl.match(/\/d\/([^/]+)/);
+    if (match) notionStudyFileIds.add(match[1]);
+  });
   state.studyDocs.forEach(function (doc) {
     if (!doc.estimatedDate || !doc.topic) return;
     if (notionStudyFileIds.has(doc.id)) return;
@@ -666,6 +742,11 @@ function renderCalendarCell(d) {
   return h;
 }
 
+// 未轉檔錄音的徽章：非講道錄音（婚禮、詩班…）排程不會自動轉，標示要跟事實一致
+function pendingAudioBadge(item) {
+  return item.driveFile && item.driveFile.autoSkip ? '🎙 錄音（不自動轉錄）' : '🎙 待轉錄';
+}
+
 function renderCalendarEvent(item, d) {
   const st = item._state;
   // 用 fileId 當 processing key（同 date+type 多場活動才能各自獨立追蹤）
@@ -807,7 +888,7 @@ function renderWeekEvent(item, d) {
   let badge = '';
   if (isProcessing) badge = '<span class="week-event-badge"><span class="spinner"></span>處理中</span>';
   else if (st === 'filled') badge = '<span class="week-event-badge">' + escapeHtml(item.status || '草稿') + '</span>';
-  else if (st === 'pending') badge = '<span class="week-event-badge">🎙 待轉錄</span>';
+  else if (st === 'pending') badge = '<span class="week-event-badge">' + pendingAudioBadge(item) + '</span>';
   else if (st === 'pending-study') badge = '<span class="week-event-badge">📖 預查</span>';
 
   let h = `<div class="${cls}" ${action}>`;
@@ -865,7 +946,7 @@ function renderRow(r) {
       const elapsedStr = min > 0 ? `${min}:${String(sec).padStart(2, '0')}` : `${sec}s`;
       badgeText = `<span class="spinner"></span>處理中 ${elapsedStr}`;
     } else {
-      badgeText = '🎙 待轉錄';
+      badgeText = pendingAudioBadge(r);
     }
     clickable = !isProcessing && gasApi.enabled();
     action = `data-action="process" data-date="${r.year}-${pad2(r.month)}-${pad2(r.day)}" data-type="${escapeAttr(r.type)}" data-fileid="${escapeAttr(fid || '')}"`;
@@ -1151,51 +1232,41 @@ async function _pollOnce() {
       return;
     }
     try {
-      const result = await api.listMeetings();
-      const meetings = result.meetings || [];
+      // 用 fileId 索引判斷「轉好了沒」，不再每 15 秒讀一次全部 Notion（600+ 筆、3~5 秒）。
+      // Worker 在新增紀錄時會清掉索引快取，所以剛轉好的一定查得到。
+      const ix = await api.meetingsIndex();
+      const audioIds = new Set(ix.audio || []);
+      const studyIds = new Set(ix.study || []);
       const keys = Object.keys(state.processing);
-      console.log(`[poll] 檢查 ${keys.length} 個處理中: [${keys.join(', ')}]，Notion 共 ${meetings.length} 筆`);
+      console.log(`[poll] 檢查 ${keys.length} 個處理中: [${keys.join(', ')}]`);
       let changed = false;
 
-      keys.forEach(function (key) {
-        let match;
+      for (const key of keys) {
+        let done = false;
         if (key.indexOf('study_') === 0) {
-          const fileId = key.substring(6);
-          match = meetings.find(m => m.studyUrl && m.studyUrl.indexOf(fileId) >= 0);
-          if (!match) console.log(`[poll] ✗ 未匹配 ${key}（找不到 studyUrl 包含 ${fileId} 的紀錄）`);
+          done = studyIds.has(key.substring(6));
+        } else if (/^\d{4}-\d{2}-\d{2}_/.test(key)) {
+          // 舊格式 date_type（沒有 fileId 時才會用）：查那一天有沒有同類型的紀錄
+          const date = key.substring(0, 10), type = key.substring(11);
+          const r = await api.listMeetings({ from: date, to: date });
+          done = (r.meetings || []).some(m => m.type === type);
         } else {
-          const idx = key.indexOf('_');
-          const date = key.substring(0, idx);
-          const type = key.substring(idx + 1);
-          match = meetings.find(function (m) {
-            const d = m.date ? m.date.substring(0, 10) : '';
-            return d === date && m.type === type;
-          });
-          if (!match) {
-            const sameDate = meetings.filter(m => (m.date || '').substring(0, 10) === date);
-            console.log(`[poll] ✗ 未匹配 ${key}: Notion 同日期 ${sameDate.length} 筆, types=[${sameDate.map(m => m.type).join(', ')}]`);
-          }
+          done = audioIds.has(key);   // 錄音以 fileId 當 key
         }
-        if (match) {
-          console.log(`[poll] ✓ 偵測完成：${match.topic}（清掉 ${key}）`);
+        if (done) {
+          console.log(`[poll] ✓ 偵測完成（清掉 ${key}）`);
           clearProcessing(key);
           changed = true;
         }
-      });
+      }
 
       if (changed) {
-        state.notionMeetings = meetings.map(function (m) {
-          const d = formatDate(m.date);
-          return Object.assign({}, m, {
-            year: d.y, month: d.m, day: d.d, dow: d.dow,
-            dateKey: m.date ? m.date.substring(0, 10) : '',
-          });
-        });
+        state.index = { audio: audioIds, study: studyIds };
         DriveCache.invalidateAll();
-        // 同步重新載入當前視圖的 Drive 資料（剛處理完的檔案應該不在 unprocessed 清單裡了）
-        if (state.view === 'week' && state.weekDate) loadDriveForWeek(state.weekDate);
-        else if (state.sm !== null) loadDriveForMonth(state.sy, state.sm);
-        else loadDriveForYear(state.sy);
+        // 重新載入當前檢視（Notion 強制重抓；剛處理完的檔案也不該再出現在 Drive 待轉清單）
+        if (state.view === 'week' && state.weekDate) loadDriveForWeek(state.weekDate, true);
+        else if (state.sm !== null) loadDriveForMonth(state.sy, state.sm, true);
+        else loadDriveForYear(state.sy, true);
         render();
       }
     } catch (e) {

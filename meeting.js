@@ -435,7 +435,8 @@
         return;
       }
       try {
-        const result = await api.listMeetings();
+        // 只查那一天（以前每 10 秒讀一次全部 Notion，600+ 筆要 3~5 秒）
+        const result = await api.listMeetings({ from: qDate, to: qDate });
         // fileId 比對為主（每個檔唯一 → 同日同時段多場活動不會撞）
         // 沒 fileId 才回退到 date+type
         const found = (result.meetings || []).find(m => {
