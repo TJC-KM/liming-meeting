@@ -434,8 +434,10 @@ const AUDIO_EXTS = ['.mp3', '.m4a', '.wav', '.ogg', '.aac'];
 
 // 非講道錄音：網站照常顯示，但 cron 不自動轉檔（婚禮、喪禮、詩班練習…不需要 AI 整理重點）。
 // 使用者在 meeting 頁手動按「加入轉錄排隊」仍然會轉 —— 只擋自動，不擋人的明確決定。
-// Config Sheet 的 AUTO_SKIP_KEYWORDS（逗號分隔）可覆寫，改完不用重新部署。
-const DEFAULT_AUTO_SKIP_KEYWORDS = '婚禮,喪禮,告別式,詩班,敬老會,聖餐禮,洗腳禮,信徒會議';
+// Config Sheet 的 AUTO_SKIP_KEYWORDS（逗號分隔）可覆寫，改完 5 分鐘內生效、不用重新部署。
+// 下面只是試算表沒有這一列時的預設值。
+// （敬老會、聖餐禮、洗腳禮、信徒會議有證道內容，要轉 —— 2026-09 使用者確認）
+const DEFAULT_AUTO_SKIP_KEYWORDS = '婚禮,喪禮,告別式,詩班';
 
 async function getAutoSkipKeywords(env) {
   const raw = await getConfigValue(env, 'AUTO_SKIP_KEYWORDS', DEFAULT_AUTO_SKIP_KEYWORDS);
