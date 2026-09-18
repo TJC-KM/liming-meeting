@@ -20,9 +20,13 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 const TZ_OFFSET_MS = 8 * 60 * 60 * 1000; // 台北 UTC+8
 
+// 聚會類型只是「標籤」＋預設時間，不是過濾條件 —— 一週七天都要有，parseFilename 永遠不會回 null 的 type。
+// （曾經只有二、三、五、六、日，週一／週四的佈道會錄音從 2020 年起一直沒顯示在網站上）
 const TYPE_TIMES = {
+  '週一晚間': [19, 30],
   '週二晚間': [19, 30],
   '週三晚間': [19, 30],
+  '週四晚間': [19, 30],
   '週五晚間': [19, 30],
   '安息日上午': [9, 30],
   '安息日下午': [19, 30],
@@ -523,9 +527,96 @@ async function getDriveFileMeta(env, fileId) {
 // 檔名解析
 // =============================================================================
 
+// 錄音檔名 → { 日期、主題、講員、聚會類型 }
+//
+// ⭐ 原則：**抓得到日期就算可解析**。講員、主題、時段都是盡力而為，抓不到就留空，
+//    照樣顯示在網站上、照樣轉檔，錯了再到 Notion 改。
+//    舊版要求「講員一定用 (…) 包在最後」「日期一定補零」「只有二三五六日」，
+//    結果 126 個真實錄音（佈道會、講員用 - 或 _ 連接、沒寫講員…）一直沒出現在網站上。
+//
+// 講員的判斷順序：
+//   ① 結尾的 (講員)            2026-09-15 真實的信仰（王塞特傳道）
+//   ② 結尾的 [_-空白]講員+職稱   2022-02-05 定睛望天-林信得弟兄
+//   ③ (講員) 後面還有短尾巴     2020-05-09 腓立比教會 (張超雄傳道)上午
+//   ④ 都沒有 → 講員空白         2021-12-18 聖餐禮
+const SPEAKER_TITLE_RX = '(?:弟兄|姊妹|姐妹|傳道|執事|長老|神學生|兄|姊)';
+
 function parseFilename(name, createdTime) {
-  // 日期後空白用 \s* 容忍「沒有空白」的舊檔（如 2020-12-26神向你所要的(...)）
-  // 講員括號接受半形 () 或全形 （），主題裡若也有半形括號（如 (一)(二)）會 backtrack 處理
+  const extM = name.match(/\.(mp3|m4a|wav|ogg|aac)$/i);
+  if (!extM) return null;
+  let rest = name.slice(0, -extM[0].length).replace(/[.\s]+$/, '');
+
+  // 日期：容忍月日沒補零（2021-10-2）、前面包 [ ]（[2023-05-02][20-23-56]）
+  const dm = rest.match(/^\s*\[?\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*\]?/);
+  if (!dm) return null;
+  const year = parseInt(dm[1], 10);
+  const month = parseInt(dm[2], 10);
+  const day = parseInt(dm[3], 10);
+  const dt = new Date(year, month - 1, day);
+  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day) return null;
+  rest = rest.slice(dm[0].length);
+
+  // 檔名內嵌的錄音時間（錄音筆預設檔名 [2023-05-02][20-23-56]）→ 用真實時間
+  let hhmm = null;
+  const tm = rest.match(/^\s*\[(\d{1,2})[-:](\d{2})(?:[-:]\d{2})?\]/);
+  if (tm) { hhmm = [parseInt(tm[1], 10), parseInt(tm[2], 10)]; rest = rest.slice(tm[0].length); }
+  rest = rest.replace(/^[\s\-_－]+/, '').trim();
+  // 括號不成對時修一下：多一個結尾的 )（「(主題)講員)」）就拿掉
+  const opens = (rest.match(/[（(]/g) || []).length;
+  const closes = (rest.match(/[）)]/g) || []).length;
+  if (closes > opens) rest = rest.replace(/[）)]\s*$/, '');
+
+  let topic = rest, speaker = '';
+  let m;
+  if ((m = rest.match(/^(.*?)\s*[（(]([^（）()]+)[）)]$/))) {                                   // ①
+    topic = m[1]; speaker = m[2];
+  } else if ((m = rest.match(new RegExp(                                                     // ②
+      `^(.*?)[\\s_\\-－（(]*([一-龥]{2,4}\\s?${SPEAKER_TITLE_RX})\\s*[_-]?(\\d{1,2})?$`)))) {
+    topic = m[1] + (m[3] ? ` ${m[3]}` : ''); speaker = m[2];
+  } else if ((m = rest.match(/^(.*?)\s*[（(]([^（）()]+)[）)]\s*[-_]?\s*(.{1,6})$/))) {         // ③
+    topic = `${m[1].trim()} ${m[3].trim()}`; speaker = m[2];
+  } else {                                                                                   // ④
+    topic = rest.replace(/\s*[（(]\s*[）)]\s*$/, '');   // 去掉空括號「講題()」
+  }
+  topic = topic.replace(/^[（(]([^（）()]+)[）)]$/, '$1').replace(/[\s_\-－]+$/, '').trim();
+  // 講員名字中間的空白（「鄭辰宥 傳道」）拿掉；多位講員用 . 或 、 分隔的保持原樣
+  speaker = speaker.trim().replace(new RegExp(`^([一-龥]{2,4})\\s+(${SPEAKER_TITLE_RX})$`), '$1$2');
+
+  // 時段：優先用真實時間 —— 檔名內嵌的錄音時間 > 檔名寫的「上午/下午」> 上傳時間（僅週六）
+  const dow = dt.getDay();
+  let hour = hhmm ? hhmm[0] : null;
+  if (hour === null && /上午/.test(rest)) hour = 9;
+  if (hour === null && /下午/.test(rest)) hour = 14;
+  let type;
+  if (dow === 6) {
+    if (hour === null && createdTime) {
+      const utc = new Date(createdTime);
+      const taipei = new Date(utc.getTime() + TZ_OFFSET_MS);
+      hour = taipei.getUTCHours();
+    }
+    type = (hour === null ? 9 : hour) < 14 ? '安息日上午' : '安息日下午';
+  }
+  else if (dow === 0) type = '週日聚會';
+  else {
+    const d = '日一二三四五六'[dow];
+    // 平日只有真的知道時間時才細分；預設都是晚間聚會
+    type = hour === null || hour >= 18 ? `週${d}晚間` : (hour < 12 ? `週${d}上午` : `週${d}下午`);
+  }
+
+  // 主題空白（例如 2020-08-07.mp3）→ 用聚會類型當主題，至少能在行事曆上認出來
+  if (!topic) topic = type;
+
+  const [hh, mm] = hhmm || TYPE_TIMES[type] || [hour ?? 19, 30];
+  const isoDate = `${year}-${pad2(month)}-${pad2(day)}T${pad2(hh)}:${pad2(mm)}:00+08:00`;
+
+  return {
+    year, month, day, topic, speaker, dow, type, isoDate,
+    dateStr: `${year}-${pad2(month)}-${pad2(day)}`,
+  };
+}
+
+// 舊版 parseFilename（保留給回歸比對用，不要在程式中呼叫）
+function _legacyParseFilename_unused(name, createdTime) {
   const m = name.match(/^(\d{4})-(\d{2})-(\d{2})\s*(.+?)\s*[（(]([^）)]+)[）)]\.(mp3|m4a|wav|ogg|aac)$/i);
   if (!m) return null;
 
@@ -2612,7 +2703,10 @@ async function runDailyProcess(env) {
     .filter(f => !processedFileIds.has(f.id))
     .sort((a, b) => {
       if (a.uploadedToday !== b.uploadedToday) return a.uploadedToday ? -1 : 1;
-      return b.name.localeCompare(a.name);
+      // 依「解析出的日期」新到舊，不是檔名字串 ——
+      // 否則 [2023-05-02][…].mp3 這種 [ 開頭的錄音筆檔名會排到最前面
+      const d = b.parsed.dateStr.localeCompare(a.parsed.dateStr);
+      return d !== 0 ? d : b.name.localeCompare(a.name);
     });
 
   console.log(`[daily] 候選 ${candidates.length} 個，未處理 ${unprocessed.length} 個`);
