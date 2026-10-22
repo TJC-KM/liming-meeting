@@ -3832,6 +3832,13 @@ async function importSchedule(env, year, month) {
     } catch (e) { console.warn('[schedule] 暫存檔清除失敗:', e.message); }
   }
 
+  // 一個週三都沒抓到 = 格式變了或檔案還是空殼。這時**不要覆蓋** KV ——
+  // 寧可繼續用上次匯成功的內容，也不要把好資料洗成空的然後靜默退回文件主題。
+  if (!entries.length) {
+    console.warn(`[schedule] ${file.name} 解析不到任何週三，保留上次的內容不覆蓋`);
+    return { ok: false, error: '解析不到任何週三（格式可能變了）', count: 0, fileName: file.name };
+  }
+
   const key = `${SCHEDULE_KV_PREFIX}${year}-${pad2(month)}`;
   if (env.PROCESS_QUEUE) {
     await env.PROCESS_QUEUE.put(key, JSON.stringify({
