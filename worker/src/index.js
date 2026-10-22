@@ -227,6 +227,15 @@ export default {
         return handleAudioStream(env, fileId, request, origin);
       }
 
+      // -- Admin: 手動匯入安排表（?year=&month= 省略就是當月）--
+      // 平常 cron 每天會自己跑，這個是用來臨時重匯與檢查解析結果
+      if (path === '/admin/import-schedule' && (request.method === 'POST' || request.method === 'GET')) {
+        const now = new Date(Date.now() + TZ_OFFSET_MS);
+        const y = parseInt(params.get('year') || '', 10) || now.getUTCFullYear();
+        const m = parseInt(params.get('month') || '', 10) || (now.getUTCMonth() + 1);
+        return cors(json(await importSchedule(env, y, m)), origin);
+      }
+
       // -- Admin: 手動觸發 daily process（同步等結果）--
       // ?limit=N 暫時覆寫 QUOTA_PER_RUN
       if (path === '/admin/run-daily' && (request.method === 'POST' || request.method === 'GET')) {
@@ -2886,6 +2895,13 @@ async function runDailyProcess(env, opts) {
   // 卡死救援每輪都做（只是改狀態，不算重活）
   await detectStuckPages(env);
 
+  // 安排表每天重匯一次（約 4~8 個 subrequest，而且當天已匯過就直接跳過）
+  try {
+    await refreshSchedulesDaily(env);
+  } catch (e) {
+    console.warn('[daily] 安排表匯入出錯（不影響其他工作）:', e.message);
+  }
+
   // ⭐ 優先處理手動排隊的 KV 項目（人明確按了「加入排隊」，排在自動重試前面）
   let processed = 0;
   const results = [];
@@ -3596,6 +3612,7 @@ font-size:22px;font-weight:700;padding:22px 16px;border-radius:14px;margin-botto
 .card{background:#fff;border-radius:14px;padding:20px}
 .label{font-size:15px;color:#7a7873;margin:0 0 8px}
 .topic{font-size:22px;font-weight:700;margin:0 0 4px}
+.progress{font-size:19px;font-weight:700;line-height:1.75;margin:0 0 6px}
 .speaker{font-size:17px;color:#5f5e5a;margin:0 0 16px}
 .more{display:block;font-size:18px;color:#1d7a52;text-decoration:none;font-weight:700;margin-top:14px}
 .btn2{display:block;background:#fff;color:#1d7a52;border:2px solid #1d7a52;text-decoration:none;
@@ -3622,9 +3639,10 @@ async function renderInvitePage(env, url, rawDate) {
 
   const cfg = await getInviteConfig(env);
   const timeLabel = formatTimeLabel(cfg.time);
-  // 關掉時連查都不查 —— 省一個 Notion 請求，也確保錯的資料不會從別的地方漏出來
+  // 關掉時連查都不查 —— 省請求，也確保錯的資料不會從別的地方漏出來
+  const sched = cfg.hideLast ? null : await getScheduleEntry(env, dateStr);
   const last = cfg.hideLast ? null : await findLatestStudyBefore(env, dateStr);
-  if (cfg.hideLast) console.log('[invite] STUDY_HIDE_LAST 開啟，不顯示上次查經');
+  if (cfg.hideLast) console.log('[invite] STUDY_HIDE_LAST 開啟，不顯示本週進度');
 
   // 卡片：固定網址不能寫日期（LINE 只抓一次，會永遠停在第一次那天）
   const ogTitle = evergreen ? cfg.title : `${cfg.title}．${formatDateLabel(dateStr)}${timeLabel}`;
@@ -3638,24 +3656,34 @@ async function renderInvitePage(env, url, rawDate) {
   } else {
     body += '<div class="warn">還沒設定線上會議連結，請聯絡管理同工。</div>';
   }
-  if (last) {
-    // 只放主題，不放人名 —— 文件上掛的主領是**上週預告的那位**，不是今晚帶分組討論的人
-    //（今晚是誰依安排表，不在這個系統的資料裡）。寫出來只會讓人以為今天是他帶。
-    // 2026-10-22 使用者要求。資料過期的防護改在 findLatestStudyBefore 做。
-    body += '<div class="card"><p class="label">本週進度</p>' +
-            `<p class="topic">${escapeHtml(last.topic)}</p>`;
-    // 原始文件：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，不是翻頁式）。
-    // 跟聚會頁的「📄 完整文件」同一招，但這裡放在前面 —— 聚會頁那份是 AI 轉出來的文字，
-    // 原始文件才是撰寫者寫的原貌（圖表、事件地圖等圖片裡的字抽不出來）。
-    const docId = fileIdFromUrl(last.docUrl);
-    if (docId) {
-      body += '<p class="doclabel">📄 原始文件</p>' +
-              `<iframe class="docframe" src="https://drive.google.com/file/d/${escapeHtml(docId)}/preview" allow="fullscreen" loading="lazy"></iframe>` +
-              `<a class="more" href="${escapeHtml(last.docUrl)}" target="_blank" rel="noopener">↗ 在新分頁開啟</a>`;
+  if (sched || last) {
+    body += '<div class="card"><p class="label">本週進度</p>';
+    if (sched) {
+      // 安排表那格是人手打的自由文字（「團契查經，帶領：…，進度：…。預查：…。」），
+      // 格式每月可能不同 —— 整段原文照搬，不解析（2026-10-22 使用者要求）。
+      body += `<p class="progress">${escapeHtml(sched.text)}</p>` +
+              (sched.lead ? `<p class="speaker">領會：${escapeHtml(sched.lead)}</p>` : '');
+    } else if (last) {
+      // 安排表還沒匯入（或那個月沒有檔）時的退路：用上週預告文件的主題。
+      // 只放主題不放人名 —— 文件上掛的是上週預告的那位，不是今晚帶分組討論的人。
+      body += `<p class="topic">${escapeHtml(last.topic)}</p>`;
     }
-    // 不帶 theme：聚會頁自己會記住使用者上次選的字級（ThemeManager 存 localStorage），
-    // 在這裡硬塞 theme=senior 會蓋掉他的選擇。
-    body += `<a class="btn2" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">純文字大字版</a></div>`;
+    // 文件可能還沒上傳（或還沒轉），這時只有安排表那段文字，照樣有用
+    if (last) {
+      // 原始文件：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，不是翻頁式）。
+      // 跟聚會頁的「📄 完整文件」同一招 —— 聚會頁那份是 AI 轉出來的文字，
+      // 原始文件才是撰寫者寫的原貌（圖表、事件地圖等圖片裡的字抽不出來）。
+      const docId = fileIdFromUrl(last.docUrl);
+      if (docId) {
+        body += '<p class="doclabel">📄 原始文件</p>' +
+                `<iframe class="docframe" src="https://drive.google.com/file/d/${escapeHtml(docId)}/preview" allow="fullscreen" loading="lazy"></iframe>` +
+                `<a class="more" href="${escapeHtml(last.docUrl)}" target="_blank" rel="noopener">↗ 在新分頁開啟</a>`;
+      }
+      // 不帶 theme：聚會頁自己會記住使用者上次選的字級（ThemeManager 存 localStorage），
+      // 在這裡硬塞 theme=senior 會蓋掉他的選擇。
+      body += `<a class="btn2" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">純文字大字版</a>`;
+    }
+    body += '</div>';
   }
   body += `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p></main>`;
 
@@ -3681,4 +3709,172 @@ function htmlShell(title, body, og) {
   }
   return `<!DOCTYPE html><html lang="zh-Hant"><head>${head}<style>${INVITE_CSS}</style></head>` +
          `<body>${body}</body></html>`;
+}
+
+// =============================================================================
+// 聚會安排表匯入（每月一份 xlsx → 週三的查經進度）
+// =============================================================================
+//
+// 來源：Drive「05安排表」資料夾，每月一個檔，檔名 `<民國年><月>聚會安排表.xlsx`
+//（例如 11510 = 民國 115 年 10 月 = 2026-10）。這些檔不是我們產的，是別人每月手寫。
+//
+// 為什麼要它：查經流程是「① 分組討論本週進度 ② 領會預告下週進度」，主領的文件當晚上傳、
+// 內容是下一週的 —— 所以光看文件只能用推的。安排表每一列直接寫明那天要查什麼：
+//
+//   10/28, 三, 王塞特, 「不分組查經，進度：得四1～23。預查：撒上一1～28。」
+//
+// 「進度」是當晚討論的、「預查」是當晚預告下次的、「帶領」是分組討論的人
+//（不分組查經就沒有帶領；團契查經依年齡分組、一般查經隨機分組、
+//   一般及宗教教育查經多一組學生組）。
+//
+// ⚠️ 這格是人手打的自由文字，每月格式可能不同。所以**不解析它**，整段原文照搬到畫面上
+// （2026-10-22 使用者的要求）。真正靠結構的只有「星期欄 == 三」跟日期欄，那個穩定得多。
+const DEFAULT_SCHEDULE_FOLDER_ID = '1dCj76vGVwzOLnzUg2gPpbCne5HSxz7N1';   // Drive「05安排表」
+const SCHEDULE_KV_PREFIX = 'schedule:';
+const SCHEDULE_KV_TTL_SEC = 100 * 24 * 60 * 60;   // 100 天，跨月後舊的自己過期
+
+// 極簡 CSV 解析：安排表很多格有逗號與換行（都被引號包起來），不能用 split(',')
+function parseCsv(text) {
+  const rows = [];
+  let row = [], cell = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i++; }   // 跳脫的雙引號
+        else inQuotes = false;
+      } else cell += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(cell); cell = '';
+    } else if (c === '\n') {
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else if (c !== '\r') {
+      cell += c;
+    }
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+// 把安排表的 CSV 抽成週三清單。
+// 欄位：0=日期 1=星期 2=領會 3=查經描述（週三那列才有，其他天是翻譯者或「-」）
+function extractWednesdays(rows, year, month) {
+  const out = [];
+  for (const row of rows) {
+    if (!row || row.length < 4) continue;
+    const day = parseInt(String(row[0] || '').trim(), 10);
+    const dow = String(row[1] || '').trim();
+    if (dow !== '三' || !(day >= 1 && day <= 31)) continue;
+    const text = String(row[3] || '').replace(/\s*\n\s*/g, ' ').trim();
+    if (!text) continue;   // 沒寫就不要硬湊
+    out.push({
+      date: `${year}-${pad2(month)}-${pad2(day)}`,
+      lead: String(row[2] || '').trim(),
+      text,
+    });
+  }
+  return out;
+}
+
+// 匯入某個月的安排表 → KV。回傳 { ok, count, entries, fileName } 方便 log 與 /admin 檢視。
+async function importSchedule(env, year, month) {
+  const folderId = await getConfigValue(env, 'SCHEDULE_FOLDER_ID', DEFAULT_SCHEDULE_FOLDER_ID);
+  const token = await getGoogleAccessToken(env);
+  const namePrefix = `${year - 1911}${pad2(month)}聚會安排表`;
+
+  const q = `'${folderId}' in parents and name contains '${namePrefix}' and trashed = false`;
+  const listRes = await fetch(
+    `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id,name,modifiedTime)&pageSize=5` +
+    '&supportsAllDrives=true&includeItemsFromAllDrives=true',
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!listRes.ok) throw new Error(`安排表列檔失敗 ${listRes.status}`);
+  const file = ((await listRes.json()).files || [])[0];
+  if (!file) return { ok: false, error: `找不到 ${namePrefix}`, count: 0 };
+
+  // xlsx 在 Worker 裡沒辦法直接解析 —— 複製成 Google 試算表再匯出 CSV，
+  // 跟預查文件 extractDocText 同一招。暫存檔最後丟垃圾桶。
+  //
+  // ⚠️ 一定要指定 parents 到預查資料夾。安排表在別人的「我的雲端硬碟」底下，
+  // 不指定的話暫存檔會落在服務帳號自己的雲端硬碟 —— 那裡沒有容量，
+  // 會回 403「The user's Drive storage quota has been exceeded」。
+  // 預查資料夾是共用雲端硬碟，容量算在共用硬碟上，服務帳號也有寫入權。
+  const tempParent = env.DRIVE_STUDY_FOLDER_ID;
+  if (!tempParent) throw new Error('未設定 DRIVE_STUDY_FOLDER_ID（安排表轉檔需要可寫的暫存位置）');
+  const copyRes = await fetch(`${DRIVE_API}/files/${file.id}/copy?supportsAllDrives=true`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: `_temp_schedule_${Date.now()}`,
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+      parents: [tempParent],
+    }),
+  });
+  if (!copyRes.ok) throw new Error(`安排表轉檔失敗 ${copyRes.status}: ${(await copyRes.text()).substring(0, 200)}`);
+  const { id: tempId } = await copyRes.json();
+
+  let entries;
+  try {
+    // CSV 只會匯出第一個工作表，安排表的第一個就是「原版」那張總表
+    const expRes = await fetch(`${DRIVE_API}/files/${tempId}/export?mimeType=text/csv`,
+                               { headers: { Authorization: `Bearer ${token}` } });
+    if (!expRes.ok) throw new Error(`安排表匯出失敗 ${expRes.status}`);
+    entries = extractWednesdays(parseCsv(await expRes.text()), year, month);
+  } finally {
+    try {
+      await fetch(`${DRIVE_API}/files/${tempId}?supportsAllDrives=true`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: true }),
+      });
+    } catch (e) { console.warn('[schedule] 暫存檔清除失敗:', e.message); }
+  }
+
+  const key = `${SCHEDULE_KV_PREFIX}${year}-${pad2(month)}`;
+  if (env.PROCESS_QUEUE) {
+    await env.PROCESS_QUEUE.put(key, JSON.stringify({
+      entries, fileName: file.name, fileModified: file.modifiedTime, importedAt: new Date().toISOString(),
+    }), { expirationTtl: SCHEDULE_KV_TTL_SEC });
+  }
+  console.log(`[schedule] ${file.name} → ${entries.length} 個週三`);
+  return { ok: true, count: entries.length, entries, fileName: file.name };
+}
+
+// 查某個日期的安排表內容。沒有就回 null（頁面自己決定怎麼退場）。
+async function getScheduleEntry(env, dateStr) {
+  if (!env.PROCESS_QUEUE) return null;
+  try {
+    const cached = await env.PROCESS_QUEUE.get(`${SCHEDULE_KV_PREFIX}${dateStr.slice(0, 7)}`, 'json');
+    if (!cached) return null;
+    return (cached.entries || []).find(e => e.date === dateStr) || null;
+  } catch (e) {
+    console.warn('[schedule] KV 讀取失敗:', e.message);
+    return null;
+  }
+}
+
+// cron 每天跑一次：重新匯入「今天」與「下個週三」所在的月份（常常是同一個月，就只做一次）。
+// 每天重匯是故意的 —— 安排表會被人中途修改（實測 11 月那份 9/30 建立、10/17 又改過）。
+// 一次匯入約 4 個 subrequest，兩個月也才 8 個，不會壓到錄音處理的預算。
+async function refreshSchedulesDaily(env) {
+  if (!env.PROCESS_QUEUE) return;
+  const today = taipeiTodayISO();
+  try {
+    if (await env.PROCESS_QUEUE.get(`${SCHEDULE_KV_PREFIX}lastRun`) === today) return;
+  } catch (e) { /* 讀不到就當沒跑過 */ }
+
+  const months = [...new Set([today.slice(0, 7), nextWednesdayISO(today).slice(0, 7)])];
+  for (const ym of months) {
+    const [y, m] = ym.split('-').map(Number);
+    try {
+      const r = await importSchedule(env, y, m);
+      if (!r.ok) console.warn(`[schedule] ${ym} 匯入略過：${r.error}`);
+    } catch (e) {
+      console.warn(`[schedule] ${ym} 匯入失敗（不影響其他工作）:`, e.message);
+    }
+  }
+  try { await env.PROCESS_QUEUE.put(`${SCHEDULE_KV_PREFIX}lastRun`, today, { expirationTtl: 3 * 24 * 60 * 60 }); }
+  catch (e) { /* 寫不進去頂多明天多跑一次 */ }
 }
