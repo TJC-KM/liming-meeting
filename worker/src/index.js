@@ -3544,7 +3544,16 @@ async function getInviteConfig(env) {
 // 因此「本週進度」= 這個日期**之前**最近一次聚會留下的那份文件，不是當天那份
 // （當天那份要等聚會結束、主領上傳後才會有，而且是再下一週的內容）。
 // 2026-10-22 使用者說明這個流程之前，頁面把它標成「上次查經」，大家只能靠默契推。
+//
+// ⚠️ 一定要有年齡上限。正常是「上一次聚會（7 天前）」留下的文件；如果那週停課或主領沒上傳，
+// 沒有上限的話會撈到再更早的文件，然後掛上「本週進度」的標題 —— 那是在講一件假的事。
+// 卡片上已經不顯示日期與主領（使用者要求只留主題），看的人無從察覺，所以只能在這裡擋。
+// 撈不到就整塊不顯示，頁面仍然有 Google Meet 按鈕可用。
+const STUDY_PROGRESS_MAX_AGE_DAYS = 13;   // 13 天：容得下幾天誤差，但擋得住「整整早一週」的文件
+
 async function findLatestStudyBefore(env, dateStr) {
+  const windowStart = new Date(Date.parse(dateStr + 'T00:00:00Z') - STUDY_PROGRESS_MAX_AGE_DAYS * 86400000)
+    .toISOString().slice(0, 10);
   try {
     const r = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
       method: 'POST',
@@ -3553,6 +3562,7 @@ async function findLatestStudyBefore(env, dateStr) {
           { property: '聚會類型', select: { equals: '週三晚間' } },
           { property: '預查資料連結', url: { is_not_empty: true } },
           { property: '聚會日期', date: { before: dateStr } },
+          { property: '聚會日期', date: { on_or_after: windowStart } },
         ] },
         sorts: [{ property: '聚會日期', direction: 'descending' }],
         page_size: 1,
@@ -3629,12 +3639,11 @@ async function renderInvitePage(env, url, rawDate) {
     body += '<div class="warn">還沒設定線上會議連結，請聯絡管理同工。</div>';
   }
   if (last) {
-    // 出處那行（日期 + 主領）要留著：萬一哪週停課或沒上傳，撈到的就會是更早的文件，
-    // 看到日期不是上一次聚會就知道不對，不會被「本週進度」這個標題騙過去。
-    const srcBits = [last.date ? formatDateLabel(last.date.slice(0, 10)) : '', last.speaker].filter(Boolean);
+    // 只放主題，不放人名 —— 文件上掛的主領是**上週預告的那位**，不是今晚帶分組討論的人
+    //（今晚是誰依安排表，不在這個系統的資料裡）。寫出來只會讓人以為今天是他帶。
+    // 2026-10-22 使用者要求。資料過期的防護改在 findLatestStudyBefore 做。
     body += '<div class="card"><p class="label">本週進度</p>' +
-            `<p class="topic">${escapeHtml(last.topic)}</p>` +
-            (srcBits.length ? `<p class="speaker">${escapeHtml(srcBits.join('　'))} 預告</p>` : '');
+            `<p class="topic">${escapeHtml(last.topic)}</p>`;
     // 原始文件：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，不是翻頁式）。
     // 跟聚會頁的「📄 完整文件」同一招，但這裡放在前面 —— 聚會頁那份是 AI 轉出來的文字，
     // 原始文件才是撰寫者寫的原貌（圖表、事件地圖等圖片裡的字抽不出來）。
