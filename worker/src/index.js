@@ -1594,15 +1594,30 @@ async function getMeeting(env, id) {
     }
   } catch (e) { /* page body 失敗不影響主回應 */ }
 
-  // 配對安排表：同一天的「週三晚間」就是一對（§3.7）。
-  // 兩邊講的是同一場聚會的不同部分 —— 這筆紀錄掛的文件是當晚**預告下週**的教材，
-  // 安排表那段寫的是當晚**分組討論**的進度。併在一起看才完整。
-  // 只花一次 KV 讀取，查不到就不附（舊聚會多半沒匯過那個月的安排表）。
+  // 配對安排表（§3.7）。一筆「週三晚間」同時牽涉兩個日期，所以要配兩次：
+  //
+  //   schedule     = 當天那筆  → 當晚分組討論的進度
+  //   docSchedule  = 七天後那筆 → 掛在這裡的文件要用在哪一次
+  //
+  // 少了第二個會出事：邀請頁（10/28）顯示「得四1～23」，按「純文字大字版」進到
+  // 10/21 這筆，看到的卻是「得三1～18」—— 兩個都對，但擺在一起像點錯了。
+  // 兩次都只是 KV 讀取，不花對外額度；配不到就不附（舊聚會多半沒匯過那個月）。
   if (result.type === '週三晚間' && result.date) {
+    const dateStr = result.date.slice(0, 10);
     try {
-      const sched = await getScheduleEntry(env, result.date.slice(0, 10));
+      const sched = await getScheduleEntry(env, dateStr);
       if (sched) result.schedule = { text: sched.text, lead: sched.lead };
     } catch (e) { /* 配不到不影響主回應 */ }
+
+    // 只有掛著預查文件的紀錄才需要講「這份文件用在哪一次」
+    if (result.studyUrl) {
+      try {
+        const nextDate = new Date(Date.parse(`${dateStr}T00:00:00Z`) + 7 * 86400000)
+          .toISOString().slice(0, 10);
+        const nextSched = await getScheduleEntry(env, nextDate);
+        if (nextSched) result.docSchedule = { date: nextDate, text: nextSched.text };
+      } catch (e) { /* 同上 */ }
+    }
   }
   return result;
 }

@@ -615,6 +615,13 @@
       if (slm) {
         h += '<div class="section slides-section">';
         h += '<div class="section-title">📄 完整文件</div>';
+        // 這份文件是當晚「預告下週」的教材，章節跟當晚討論的進度本來就不一樣。
+        // 寫出它用在哪一次，從邀請頁按「純文字大字版」進來才對得起來。
+        if (m.docSchedule && m.docSchedule.text) {
+          var df = formatDate(m.docSchedule.date);
+          h += '<div class="doc-for">用於 ' + escapeHtml(df.m + '/' + df.d + '（週' + df.dow + '）') +
+               '：' + escapeHtml(m.docSchedule.text) + '</div>';
+        }
         h += '<iframe class="slides-frame" src="https://drive.google.com/file/d/' + escapeAttr(slm[1]) + '/preview" allow="fullscreen"></iframe>';
         h += '<a class="slides-open" href="' + escapeAttr(m.slidesUrl) + '" target="_blank" rel="noopener">↗ 在新分頁開啟</a>';
         h += '</div>';
