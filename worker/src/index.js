@@ -2895,9 +2895,9 @@ async function runDailyProcess(env, opts) {
   // 卡死救援每輪都做（只是改狀態，不算重活）
   await detectStuckPages(env);
 
-  // 安排表每天重匯一次（約 4~8 個 subrequest，而且當天已匯過就直接跳過）
+  // 安排表：星期一重匯一次，平常只讀 KV 確認資料還在（0 個對外請求）
   try {
-    await refreshSchedulesDaily(env);
+    await refreshSchedulesWeekly(env);
   } catch (e) {
     console.warn('[daily] 安排表匯入出錯（不影響其他工作）:', e.message);
   }
@@ -3865,23 +3865,44 @@ async function getScheduleEntry(env, dateStr) {
 // cron 每天跑一次：重新匯入「今天」與「下個週三」所在的月份（常常是同一個月，就只做一次）。
 // 每天重匯是故意的 —— 安排表會被人中途修改（實測 11 月那份 9/30 建立、10/17 又改過）。
 // 一次匯入約 4 個 subrequest，兩個月也才 8 個，不會壓到錄音處理的預算。
-async function refreshSchedulesDaily(env) {
+async function refreshSchedulesWeekly(env) {
   if (!env.PROCESS_QUEUE) return;
   const today = taipeiTodayISO();
-  try {
-    if (await env.PROCESS_QUEUE.get(`${SCHEDULE_KV_PREFIX}lastRun`) === today) return;
-  } catch (e) { /* 讀不到就當沒跑過 */ }
-
   const months = [...new Set([today.slice(0, 7), nextWednesdayISO(today).slice(0, 7)])];
+
+  // ① 缺的月份隨時補 —— 只讀 KV，不花任何對外請求。
+  //    不能純粹等星期一：月初換新檔時（例如 12/1 是星期二）會卡到下週一頁面才有進度。
+  const missing = [];
   for (const ym of months) {
+    let has = false;
+    try { has = !!(await env.PROCESS_QUEUE.get(`${SCHEDULE_KV_PREFIX}${ym}`)); } catch (e) { /* 當作沒有 */ }
+    if (!has) missing.push(ym);
+  }
+
+  // ② 資料都在的話，只有星期一重匯一次（安排表偶爾會被中途修改）
+  const isMonday = new Date(`${today}T00:00:00Z`).getUTCDay() === 1;
+  const weeklyKey = `${SCHEDULE_KV_PREFIX}lastWeekly`;
+  let ranToday = false;
+  try { ranToday = (await env.PROCESS_QUEUE.get(weeklyKey)) === today; } catch (e) { /* 忽略 */ }
+
+  const targets = [...new Set([...missing, ...((isMonday && !ranToday) ? months : [])])];
+  if (!targets.length) return;
+
+  let anyOk = false;
+  for (const ym of targets) {
     const [y, m] = ym.split('-').map(Number);
     try {
       const r = await importSchedule(env, y, m);
-      if (!r.ok) console.warn(`[schedule] ${ym} 匯入略過：${r.error}`);
+      if (r.ok) anyOk = true;
+      else console.warn(`[schedule] ${ym} 匯入略過：${r.error}`);
     } catch (e) {
       console.warn(`[schedule] ${ym} 匯入失敗（不影響其他工作）:`, e.message);
     }
   }
-  try { await env.PROCESS_QUEUE.put(`${SCHEDULE_KV_PREFIX}lastRun`, today, { expirationTtl: 3 * 24 * 60 * 60 }); }
-  catch (e) { /* 寫不進去頂多明天多跑一次 */ }
+
+  // 全部都失敗就不要記號，下一輪 cron 會再試一次，不用等到下週一
+  if (isMonday && anyOk) {
+    try { await env.PROCESS_QUEUE.put(weeklyKey, today, { expirationTtl: 14 * 24 * 60 * 60 }); }
+    catch (e) { /* 寫不進去頂多今天多匯幾次 */ }
+  }
 }
