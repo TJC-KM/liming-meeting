@@ -3428,7 +3428,7 @@ async function processAudio(env, payload, pageId) {
 // —— 因為落地頁本來就由這個 Worker 產生，沒有 GitHub Pages 那種 og 標籤寫死的問題。
 
 const SITE_BASE = 'https://tjc-km.github.io/liming-meeting';
-const DEFAULT_INVITE_TITLE = '社青線上查經';
+const DEFAULT_INVITE_TITLE = '黎明教會線上查經';
 const DOW_CN_LABEL = ['日', '一', '二', '三', '四', '五', '六'];
 
 // study.liming-tjc.org → 短網址（/10-29）；其他網域（workers.dev）→ /invite/10-29
@@ -3560,6 +3560,9 @@ font-size:22px;font-weight:700;padding:22px 16px;border-radius:14px;margin-botto
 .topic{font-size:22px;font-weight:700;margin:0 0 4px}
 .speaker{font-size:17px;color:#5f5e5a;margin:0 0 16px}
 .more{display:block;font-size:18px;color:#1d7a52;text-decoration:none;font-weight:700;margin-top:14px}
+.btn2{display:block;background:#fff;color:#1d7a52;border:2px solid #1d7a52;text-decoration:none;
+text-align:center;font-size:19px;font-weight:700;padding:16px;border-radius:12px;margin-top:16px}
+.btn2:active{background:#eef6f1}
 .doclabel{font-size:15px;color:#7a7873;margin:18px 0 8px}
 .docframe{width:100%;height:62vh;min-height:360px;border:1px solid #e3e0d7;border-radius:10px;
 background:#fff;display:block}
@@ -3612,7 +3615,8 @@ async function renderInvitePage(env, url, rawDate) {
               `<iframe class="docframe" src="https://drive.google.com/file/d/${escapeHtml(docId)}/preview" allow="fullscreen" loading="lazy"></iframe>` +
               `<a class="more" href="${escapeHtml(last.docUrl)}" target="_blank" rel="noopener">↗ 在新分頁開啟</a>`;
     }
-    body += `<a class="more" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">看文字版重點 →</a></div>`;
+    // theme=senior 是網站的大字版（ThemeManager 只認 adult / senior）
+    body += `<a class="btn2" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}&theme=senior">純文字大字版</a></div>`;
   }
   body += `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p></main>`;
 
