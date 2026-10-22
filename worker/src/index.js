@@ -22,10 +22,14 @@ const TZ_OFFSET_MS = 8 * 60 * 60 * 1000; // 台北 UTC+8
 
 // 聚會類型只是「標籤」＋預設時間，不是過濾條件 —— 一週七天都要有，parseFilename 永遠不會回 null 的 type。
 // （曾經只有二、三、五、六、日，週一／週四的佈道會錄音從 2020 年起一直沒顯示在網站上）
+// 週三查經（社青線上）實際是晚上 8 點 —— 2026-10-22 使用者確認，原本寫 19:30 是錯的。
+// 已經寫進 Notion 的舊紀錄維持 19:30，只有之後新建的用這個時間。
+const STUDY_MEETING_TIME = '20:00';
+
 const TYPE_TIMES = {
   '週一晚間': [19, 30],
   '週二晚間': [19, 30],
-  '週三晚間': [19, 30],
+  '週三晚間': [20, 0],
   '週四晚間': [19, 30],
   '週五晚間': [19, 30],
   '安息日上午': [9, 30],
@@ -323,11 +327,25 @@ export default {
         }
       }
 
+      // -- 查經邀請頁（給 LINE 群組分享用）--
+      // study.liming-tjc.org 用短網址（/10-29），workers.dev 用 /invite/10-29。
+      // 兩者都回傳整頁 HTML（og 標籤直接寫在 head，不用轉址）。
+      const invitePath = inviteSubPath(url, path);
+      if (invitePath !== null && request.method === 'GET') {
+        if (invitePath === '') {
+          return htmlResponse(await renderInviteGenerator(env, url));
+        }
+        if (/^\d{1,4}-\d{1,2}(-\d{1,2})?$/.test(invitePath)) {
+          const page = await renderInvitePage(env, url, invitePath);
+          return htmlResponse(page.body, page.status);
+        }
+      }
+
       // -- Root --
       if (path === '' || path === '/') {
         return cors(json({
           name: 'church-meeting-api',
-          routes: ['/meetings', '/meetings/:id', '/drive/list?year=&month=', '/drive/process'],
+          routes: ['/meetings', '/meetings/:id', '/drive/list?year=&month=', '/drive/process', '/invite'],
         }), origin);
       }
 
@@ -1847,7 +1865,9 @@ async function getKnownSpeakers(env) {
 function parseStudyFilename(name, knownSpeakers) {
   knownSpeakers = knownSpeakers || [];
   const base = name.replace(/\.(docx|pdf|doc|pptx|ppt)$/i, '')
-    .replace(/^\d+[.、_\-\s]+/, '')  // 去掉開頭流水號（如「16.士師記第13章預查」的「16.」）
+    // 去掉開頭流水號：「16.士師記第13章預查」的「16.」，以及沒有分隔符的「01路得記導讀」。
+    // 沒分隔符時只吃 1~2 位數且後面不接數字，「2026年度…」才不會被咬掉前兩位。
+    .replace(/^(?:\d+[.、_\-\s]+|\d{1,2}(?!\d))\s*/, '')
     .trim();
   const titlePattern = SPEAKER_TITLES.join('|');
 
@@ -2492,7 +2512,7 @@ async function processSingleStudyDoc(env, fileId, overwrite, requireContentDate,
   const elapsedSec = Math.round((Date.now() - t0) / 1000);
   const properties = {
     '聚會主題': { title: chunkRichText(topic) },
-    '聚會日期': { date: { start: `${dateStr}T19:30:00+08:00` } },
+    '聚會日期': { date: { start: `${dateStr}T${STUDY_MEETING_TIME}:00+08:00` } },
     '聚會類型': { select: { name: type } },
     '狀態': { select: { name: '草稿' } },
     '預查資料連結': { url: `https://drive.google.com/file/d/${file.id}/view` },
@@ -2593,7 +2613,7 @@ async function handleStudySync(env, limit) {
       // 組裝 properties
       const properties = {
         '聚會主題': { title: chunkRichText(topic) },
-        '聚會日期': { date: { start: `${dateStr}T19:30:00+08:00` } },
+        '聚會日期': { date: { start: `${dateStr}T${STUDY_MEETING_TIME}:00+08:00` } },
         '聚會類型': { select: { name: type } },
         '狀態': { select: { name: '草稿' } },
         '預查資料連結': { url: `https://drive.google.com/file/d/${doc.id}/view` },
@@ -3388,4 +3408,259 @@ async function processAudio(env, payload, pageId) {
       elapsedSec: totalSec,
     };
   }
+}
+
+// =============================================================================
+// 查經邀請頁（給 LINE 群組分享用）
+// =============================================================================
+//
+// 幹部每週在 LINE 群組貼邀請。原本貼 meet.google.com 的原始連結，LINE 只顯示一行網址。
+// 改貼自家網址後，LINE 會抓 og 標籤顯示預覽卡片，點開是一頁「大按鈕 + 上週查經」。
+//
+// ⚠️ **網址一定要帶日期**：LINE 會記住它第一次抓到的卡片，之後同一個網址不管內容怎麼改，
+// 卡片都不會更新。帶日期 = 每週都是新網址 = 每週都是新卡片。幹部不用自己改數字，
+// 到 /invite 按「複製邀請文字」就會連網址一起複製好。
+//
+// 這裡直接回傳整頁 HTML（og 標籤寫在 head），不像 LimingUploader 那樣再 location.replace 轉址
+// —— 因為落地頁本來就由這個 Worker 產生，沒有 GitHub Pages 那種 og 標籤寫死的問題。
+
+const SITE_BASE = 'https://tjc-km.github.io/liming-meeting';
+const DEFAULT_INVITE_TITLE = '社青線上查經';
+const DEFAULT_INVITE_TEXT = '哈利路亞社青們\n邀請大家八點一起上線查經喔';
+const DOW_CN_LABEL = ['日', '一', '二', '三', '四', '五', '六'];
+
+// study.liming-tjc.org → 短網址（/10-29）；其他網域（workers.dev）→ /invite/10-29
+// 回傳 null = 這個請求不是邀請頁，交給後面的路由
+function inviteSubPath(url, path) {
+  if (/^study\./i.test(url.hostname)) return path.replace(/^\//, '');
+  if (path === '/invite') return '';
+  if (path.startsWith('/invite/')) return path.slice('/invite/'.length);
+  return null;
+}
+
+function htmlResponse(body, status) {
+  return new Response(body, {
+    status: status || 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function taipeiTodayISO() {
+  return new Date(Date.now() + TZ_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function isValidISODate(iso) {
+  const d = new Date(iso + 'T00:00:00Z');
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso;
+}
+
+// 接受 2026-10-29 或 10-29。只給月日時選「離今天最近的那一年」，跨年也不會錯
+// （12 月貼 1 月的連結會解成明年）。
+function normalizeInviteDate(raw) {
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(raw || '');
+  if (m) {
+    const iso = `${m[1]}-${pad2(+m[2])}-${pad2(+m[3])}`;
+    return isValidISODate(iso) ? iso : null;
+  }
+  m = /^(\d{1,2})-(\d{1,2})$/.exec(raw || '');
+  if (!m) return null;
+  const today = taipeiTodayISO();
+  const thisYear = +today.slice(0, 4);
+  let best = null;
+  for (const y of [thisYear - 1, thisYear, thisYear + 1]) {
+    const iso = `${y}-${pad2(+m[1])}-${pad2(+m[2])}`;
+    if (!isValidISODate(iso)) continue;
+    const diff = Math.abs(Date.parse(iso) - Date.parse(today));
+    if (!best || diff < best.diff) best = { iso, diff };
+  }
+  return best ? best.iso : null;
+}
+
+// 當天就是週三 → 回傳當天（跟 getNextWednesdayTaipei 的語意一致）
+function nextWednesdayISO(fromISO) {
+  const d = new Date(fromISO + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + ((3 - d.getUTCDay() + 7) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+function formatDateLabel(iso) {
+  const d = new Date(iso + 'T00:00:00Z');
+  return `${d.getUTCMonth() + 1}/${d.getUTCDate()}（${DOW_CN_LABEL[d.getUTCDay()]}）`;
+}
+
+// '20:00' → '晚上 8:00'
+function formatTimeLabel(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || '');
+  if (!m) return hhmm || '';
+  const h = +m[1];
+  const period = h < 12 ? '上午' : (h < 18 ? '下午' : '晚上');
+  return `${period} ${h % 12 === 0 ? 12 : h % 12}:${m[2]}`;
+}
+
+// 全部可在 Config Sheet 調，改完 5 分鐘生效、不用重新部署
+async function getInviteConfig(env) {
+  return {
+    title: await getConfigValue(env, 'STUDY_INVITE_TITLE', DEFAULT_INVITE_TITLE),
+    meetUrl: await getConfigValue(env, 'STUDY_MEET_URL', ''),
+    text: await getConfigValue(env, 'STUDY_INVITE_TEXT', DEFAULT_INVITE_TEXT),
+    ogImage: await getConfigValue(env, 'STUDY_OG_IMAGE', ''),
+    time: await getConfigValue(env, 'STUDY_TIME', STUDY_MEETING_TIME),
+  };
+}
+
+// 邀請日期之前最近一次、有預查資料的週三查經
+async function findLatestStudyBefore(env, dateStr) {
+  try {
+    const r = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: { and: [
+          { property: '聚會類型', select: { equals: '週三晚間' } },
+          { property: '預查資料連結', url: { is_not_empty: true } },
+          { property: '聚會日期', date: { before: dateStr } },
+        ] },
+        sorts: [{ property: '聚會日期', direction: 'descending' }],
+        page_size: 1,
+      }),
+    });
+    const p = (r.results || [])[0];
+    if (!p) return null;
+    return {
+      id: p.id,
+      topic: getTitle(p.properties['聚會主題']),
+      speaker: getRichText(p.properties['講員']),
+      date: p.properties['聚會日期']?.date?.start || null,
+    };
+  } catch (e) {
+    console.warn('[invite] 查上週預查失敗:', e.message);
+    return null;
+  }
+}
+
+const INVITE_CSS = `*{box-sizing:border-box}body{margin:0;background:#f4f1ea;color:#2c2c2a;
+font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;line-height:1.7}
+main{max-width:520px;margin:0 auto;padding:32px 20px 48px}
+h1{font-size:30px;margin:0 0 6px;font-weight:700}
+.when{font-size:20px;color:#5f5e5a;margin:0 0 28px}
+.join{display:block;background:#1d7a52;color:#fff;text-decoration:none;text-align:center;
+font-size:22px;font-weight:700;padding:22px 16px;border-radius:14px;margin-bottom:28px}
+.join:active{background:#165f40}
+.card{background:#fff;border-radius:14px;padding:20px}
+.label{font-size:15px;color:#7a7873;margin:0 0 8px}
+.topic{font-size:22px;font-weight:700;margin:0 0 4px}
+.speaker{font-size:17px;color:#5f5e5a;margin:0 0 16px}
+.more{display:inline-block;font-size:18px;color:#1d7a52;text-decoration:none;font-weight:700}
+.foot{font-size:16px;color:#7a7873;text-align:center;margin:28px 0 0}
+.warn{background:#fdf0e3;border-radius:14px;padding:18px;font-size:17px;margin-bottom:28px}
+label{display:block;font-size:17px;font-weight:700;margin:20px 0 8px}
+input{width:100%;font-size:19px;padding:14px;border:1px solid #cfccc3;border-radius:10px;
+background:#fff;font-family:inherit}
+pre{background:#fff;border-radius:14px;padding:18px;font-size:17px;white-space:pre-wrap;
+word-break:break-all;margin:8px 0 0;font-family:inherit;line-height:1.8}
+button{width:100%;font-size:21px;font-weight:700;padding:20px;border:0;border-radius:14px;
+background:#1d7a52;color:#fff;margin-top:20px;font-family:inherit}
+button:active{background:#165f40}
+.hint{font-size:15px;color:#7a7873;margin:12px 0 0}`;
+
+async function renderInvitePage(env, url, rawDate) {
+  const dateStr = normalizeInviteDate(rawDate);
+  if (!dateStr) {
+    return {
+      status: 404,
+      body: htmlShell('查不到這個日期',
+        '<main><h1>查不到這個日期</h1><p class="when">網址可能打錯了，請再跟幹部要一次。</p></main>', {}),
+    };
+  }
+
+  const cfg = await getInviteConfig(env);
+  const weekTopic = (url.searchParams.get('t') || '').trim().slice(0, 40);
+  const last = await findLatestStudyBefore(env, dateStr);
+
+  const whenLabel = `${formatDateLabel(dateStr)}${formatTimeLabel(cfg.time)}`;
+  const ogTitle = `${cfg.title}．${whenLabel}`;
+  const lastLabel = last ? `${last.topic}${last.speaker ? `（${last.speaker}）` : ''}` : '';
+  const ogDesc = weekTopic
+    ? `本週查${weekTopic}。${lastLabel ? `上週：${lastLabel}` : ''}`.trim()
+    : (lastLabel ? `上週查了${lastLabel}，點開可以先複習` : '點開就能加入線上查經');
+
+  let body = '<main>';
+  body += `<h1>${escapeHtml(cfg.title)}</h1>`;
+  body += `<p class="when">${escapeHtml(whenLabel)}</p>`;
+  if (weekTopic) {
+    body += '<div class="card" style="margin-bottom:28px"><p class="label">本週進度</p>' +
+            `<p class="topic">${escapeHtml(weekTopic)}</p></div>`;
+  }
+  if (cfg.meetUrl) {
+    body += `<a class="join" href="${escapeHtml(cfg.meetUrl)}">📹 加入 Google Meet</a>`;
+  } else {
+    body += '<div class="warn">還沒設定線上會議連結，請聯絡管理同工。</div>';
+  }
+  if (last) {
+    body += '<div class="card"><p class="label">上週查經</p>' +
+            `<p class="topic">${escapeHtml(last.topic)}</p>` +
+            (last.speaker ? `<p class="speaker">${escapeHtml(last.speaker)}</p>` : '') +
+            `<a class="more" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">看預查內容 →</a></div>`;
+  }
+  body += `<p class="foot">每週三${escapeHtml(formatTimeLabel(cfg.time))}，歡迎隨時加入</p></main>`;
+
+  return {
+    status: 200,
+    body: htmlShell(ogTitle, body, {
+      ogTitle, ogDesc, ogImage: cfg.ogImage,
+      ogUrl: url.origin + url.pathname + (weekTopic ? `?t=${encodeURIComponent(weekTopic)}` : ''),
+    }),
+  };
+}
+
+async function renderInviteGenerator(env, url) {
+  const cfg = await getInviteConfig(env);
+  const nextWed = nextWednesdayISO(taipeiTodayISO());
+  const shortBase = /^study\./i.test(url.hostname) ? `${url.origin}/` : `${url.origin}/invite/`;
+  const boot = JSON.stringify({ base: shortBase, text: cfg.text });
+
+  let body = '<main><h1>產生本週邀請</h1>';
+  body += '<p class="when">填好按「複製邀請文字」，再貼到 LINE 群組。</p>';
+  body += `<label for="d">查經日期</label><input type="date" id="d" value="${nextWed}">`;
+  body += '<label for="t">本週進度（可不填）</label>' +
+          '<input type="text" id="t" placeholder="例如：路得記第五章">';
+  body += '<pre id="preview"></pre>';
+  body += '<button type="button" id="copy">複製邀請文字</button>';
+  body += '<p class="hint">每週的網址都不一樣，LINE 才會顯示當週的預覽卡片。</p></main>';
+  body += '<' + `script>(function(){var C=${boot};` +
+    'var d=document.getElementById("d"),t=document.getElementById("t"),' +
+    'p=document.getElementById("preview"),b=document.getElementById("copy");' +
+    'function build(){var v=d.value;if(!v)return C.text;' +
+    'var u=C.base+(+v.slice(5,7))+"-"+(+v.slice(8,10));' +
+    'var tp=t.value.trim();if(tp)u+="?t="+encodeURIComponent(tp);' +
+    'return C.text+"\\n"+u;}' +
+    'function sync(){p.textContent=build();}' +
+    'd.addEventListener("input",sync);t.addEventListener("input",sync);sync();' +
+    'b.addEventListener("click",function(){var s=build();' +
+    'if(navigator.clipboard&&navigator.clipboard.writeText){' +
+    'navigator.clipboard.writeText(s).then(function(){b.textContent="已複製，去 LINE 貼上";},' +
+    'function(){window.prompt("請手動複製：",s);});}' +
+    'else{window.prompt("請手動複製：",s);}});})();<' + '/script>';
+
+  return htmlShell('產生本週邀請', body, {});
+}
+
+function htmlShell(title, body, og) {
+  let head = '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+             `<title>${escapeHtml(title)}</title>`;
+  if (og && og.ogTitle) {
+    head += '<meta property="og:type" content="website">' +
+            `<meta property="og:title" content="${escapeHtml(og.ogTitle)}">` +
+            `<meta property="og:description" content="${escapeHtml(og.ogDesc || '')}">` +
+            `<meta name="description" content="${escapeHtml(og.ogDesc || '')}">`;
+    if (og.ogUrl) head += `<meta property="og:url" content="${escapeHtml(og.ogUrl)}">`;
+    if (og.ogImage) head += `<meta property="og:image" content="${escapeHtml(og.ogImage)}">`;
+  }
+  return `<!DOCTYPE html><html lang="zh-Hant"><head>${head}<style>${INVITE_CSS}</style></head>` +
+         `<body>${body}</body></html>`;
 }

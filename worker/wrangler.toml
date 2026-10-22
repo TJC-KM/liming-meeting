@@ -20,6 +20,11 @@ QUOTA_PER_RUN = "1"
 [triggers]
 crons = ["30 22 * * *", "30 4 * * *", "0 8 * * *", "30 13 * * *"]
 
+# 查經邀請頁的短網址（LINE 分享用）。liming-tjc.org 的 DNS 在同一個 Cloudflare 帳號，
+# 部署時會自動建立這個子網域的紀錄。網址格式 https://study.liming-tjc.org/10-29
+# 不加這段也能用，只是要走 https://church-meeting-api.c3012312.workers.dev/invite/10-29
+routes = [{ pattern = "study.liming-tjc.org", custom_domain = true }]
+
 # KV：手動轉錄排隊（建立後填入 id）
 # 建立指令：npx wrangler kv namespace create PROCESS_QUEUE
 [[kv_namespaces]]
