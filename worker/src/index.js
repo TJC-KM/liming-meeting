@@ -3537,6 +3537,9 @@ async function findLatestStudyBefore(env, dateStr) {
       topic: getTitle(p.properties['聚會主題']),
       speaker: getRichText(p.properties['講員']),
       date: p.properties['聚會日期']?.date?.start || null,
+      // 「完整文件」PDF（worker 從 Word/PPT 轉出，PDF 直接沿用原檔）。
+      // 沒有就退回預查原檔 —— Drive 的 /preview 對 docx/pptx/pdf 都能渲染。
+      docUrl: p.properties['投影片']?.url || p.properties['預查資料連結']?.url || null,
     };
   } catch (e) {
     console.warn('[invite] 查上週預查失敗:', e.message);
@@ -3556,7 +3559,10 @@ font-size:22px;font-weight:700;padding:22px 16px;border-radius:14px;margin-botto
 .label{font-size:15px;color:#7a7873;margin:0 0 8px}
 .topic{font-size:22px;font-weight:700;margin:0 0 4px}
 .speaker{font-size:17px;color:#5f5e5a;margin:0 0 16px}
-.more{display:inline-block;font-size:18px;color:#1d7a52;text-decoration:none;font-weight:700}
+.more{display:block;font-size:18px;color:#1d7a52;text-decoration:none;font-weight:700;margin-top:14px}
+.doclabel{font-size:15px;color:#7a7873;margin:18px 0 8px}
+.docframe{width:100%;height:62vh;min-height:360px;border:1px solid #e3e0d7;border-radius:10px;
+background:#fff;display:block}
 .foot{font-size:16px;color:#7a7873;text-align:center;margin:28px 0 0}
 .warn{background:#fdf0e3;border-radius:14px;padding:18px;font-size:17px;margin-bottom:28px}`;
 
@@ -3596,8 +3602,17 @@ async function renderInvitePage(env, url, rawDate) {
     const lastDate = last.date ? formatDateLabel(last.date.slice(0, 10)) : '';
     body += `<div class="card"><p class="label">上次查經${escapeHtml(lastDate ? '　' + lastDate : '')}</p>` +
             `<p class="topic">${escapeHtml(last.topic)}</p>` +
-            (last.speaker ? `<p class="speaker">${escapeHtml(last.speaker)}</p>` : '') +
-            `<a class="more" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">看預查內容 →</a></div>`;
+            (last.speaker ? `<p class="speaker">${escapeHtml(last.speaker)}</p>` : '');
+    // 原始文件：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，不是翻頁式）。
+    // 跟聚會頁的「📄 完整文件」同一招，但這裡放在前面 —— 聚會頁那份是 AI 轉出來的文字，
+    // 原始文件才是撰寫者寫的原貌（圖表、事件地圖等圖片裡的字抽不出來）。
+    const docId = fileIdFromUrl(last.docUrl);
+    if (docId) {
+      body += '<p class="doclabel">📄 原始文件</p>' +
+              `<iframe class="docframe" src="https://drive.google.com/file/d/${escapeHtml(docId)}/preview" allow="fullscreen" loading="lazy"></iframe>` +
+              `<a class="more" href="${escapeHtml(last.docUrl)}" target="_blank" rel="noopener">↗ 在新分頁開啟</a>`;
+    }
+    body += `<a class="more" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">看文字版重點 →</a></div>`;
   }
   body += `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p></main>`;
 
