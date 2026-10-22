@@ -3615,8 +3615,9 @@ async function renderInvitePage(env, url, rawDate) {
               `<iframe class="docframe" src="https://drive.google.com/file/d/${escapeHtml(docId)}/preview" allow="fullscreen" loading="lazy"></iframe>` +
               `<a class="more" href="${escapeHtml(last.docUrl)}" target="_blank" rel="noopener">↗ 在新分頁開啟</a>`;
     }
-    // theme=senior 是網站的大字版（ThemeManager 只認 adult / senior）
-    body += `<a class="btn2" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}&theme=senior">純文字大字版</a></div>`;
+    // 不帶 theme：聚會頁自己會記住使用者上次選的字級（ThemeManager 存 localStorage），
+    // 在這裡硬塞 theme=senior 會蓋掉他的選擇。
+    body += `<a class="btn2" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">純文字大字版</a></div>`;
   }
   body += `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p></main>`;
 
