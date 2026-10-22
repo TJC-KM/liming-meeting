@@ -895,10 +895,18 @@ const DEFAULT_GEMINI_PROMPT = `你是教會聚會紀錄整理助手。請仔細�
 - 直接輸出 markdown 文字，不要包在 \`\`\`markdown\`\`\` 程式碼塊裡
 - 三個一級標題（# 簡易重點 / # 完整重點 / # 參考經文）必須完整出現，順序如上`;
 
-// === Config Sheet 載入（5 分鐘快取）===
+// === Config Sheet 載入（1 分鐘快取）===
+//
+// 為什麼要快取：沒有的話每次開頁面都要多等一次 Google 的來回（0.2~0.5 秒）；
+// 而且讀失敗時會退回預設值 —— `STUDY_MEET_URL` 的預設是空字串，
+// 也就是尖峰時段撞到 429 的人會看到「還沒設定線上會議連結」，Meet 按鈕直接不見。
+//
+// 為什麼是 1 分鐘：Sheets API 讀取上限是每分鐘 60 次（每個使用者，這裡是服務帳號）。
+// 1 分鐘 TTL 的最壞情況是每個 isolate 每分鐘讀一次，離上限還很遠，
+// 但設定改完的生效時間比原本的 5 分鐘短很多（2026-10-22 從 5 分鐘改過來）。
 let _configCache = null;
 let _configCacheTime = 0;
-const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
+const CONFIG_CACHE_TTL_MS = 60 * 1000;
 
 async function loadConfig(env) {
   if (!env.CONFIG_SHEET_ID) return {};
