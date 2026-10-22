@@ -3,6 +3,19 @@ main = "src/index.js"
 compatibility_date = "2024-09-01"
 account_id = "8e2eb47cb86e3cfb953c89dd148b6137"
 
+# 查經邀請頁的短網址（LINE 分享用）。liming-tjc.org 的 DNS 在同一個 Cloudflare 帳號，
+# 部署時會自動建立這個子網域的紀錄。網址格式 https://study.liming-tjc.org/10-28
+# 不加這段也能用，只是要走 https://church-meeting-api.c3012312.workers.dev/invite/10-28
+#
+# ⚠️ 這行一定要放在所有 [區段] 標頭之前。TOML 是區段作用域，放到 [triggers] 後面會被
+# 當成 triggers.routes，wrangler 只會印一行 WARNING 然後照常部署，自訂網域靜靜地沒生效。
+routes = [{ pattern = "study.liming-tjc.org", custom_domain = true }]
+
+# ⚠️ 一旦設了 routes，workers_dev 就預設變成 false，`church-meeting-api.c3012312.workers.dev`
+# 會直接 404 —— 而前端 api.js 的 API_URL 正是指到那裡，整個網站會掛掉（2026-10-22 踩過）。
+# 這行一定要留著。
+workers_dev = true
+
 [vars]
 # 用寫死版本名稱避免 "*-latest" alias 偶爾指到區域沒部署的版本造成 503
 GEMINI_MODEL = "gemini-2.5-flash"
@@ -19,11 +32,6 @@ QUOTA_PER_RUN = "1"
 # Cron 格式：minute hour day-of-month month day-of-week（時間都是 UTC）
 [triggers]
 crons = ["30 22 * * *", "30 4 * * *", "0 8 * * *", "30 13 * * *"]
-
-# 查經邀請頁的短網址（LINE 分享用）。liming-tjc.org 的 DNS 在同一個 Cloudflare 帳號，
-# 部署時會自動建立這個子網域的紀錄。網址格式 https://study.liming-tjc.org/10-29
-# 不加這段也能用，只是要走 https://church-meeting-api.c3012312.workers.dev/invite/10-29
-routes = [{ pattern = "study.liming-tjc.org", custom_domain = true }]
 
 # KV：手動轉錄排隊（建立後填入 id）
 # 建立指令：npx wrangler kv namespace create PROCESS_QUEUE
