@@ -40,7 +40,10 @@ const TYPE_TIMES = {
 export default {
   // 每日排程：處理近 2 天上傳、Notion 還沒紀錄的音檔
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runDailyProcess(env, { allowRetry: RETRY_CRONS.includes(event.cron) }));
+    ctx.waitUntil(runDailyProcess(env, {
+      allowRetry: RETRY_CRONS.includes(event.cron),
+      studyFirst: STUDY_CRONS.includes(event.cron),
+    }));
   },
 
   async fetch(request, env, ctx) {
@@ -2836,11 +2839,24 @@ async function processWithPlaceholder(env, fileId, opts) {
 // 改 wrangler.toml 的 crons 時這裡要一起改。
 const RETRY_CRONS = ['30 22 * * *', '0 8 * * *'];   // 台北 06:30、16:00
 
+// 哪一輪 cron 優先處理預查（台北 21:30）。
+//
+// 為什麼需要指定一輪：預查排在最後一步、條件是「本輪完全沒做錄音」，但四輪都有事做
+// —— 12:30／21:30 轉錄音（2026-09 修好 Drive 翻頁後有約 900 份舊錄音可轉，每輪都撈得到）、
+// 06:30／16:00 做重試 —— 所以預查永遠輪不到。實際查過 Notion：252 筆預查紀錄的轉檔時間
+// 沒有一筆落在 cron 時段，全是人工點或 2026-08 的批次補檔。
+//
+// 為什麼選 21:30：預查固定在**週三晚上 20:00～21:15** 上傳（2026-04～10 共 23 次都是），
+// 這一輪剛好在那之後，當晚就能上網站。改 wrangler.toml 的 crons 時這裡要一起改。
+const STUDY_CRONS = ['30 13 * * *'];   // 台北 21:30
+
 // opts.allowRetry：這輪可不可以做重試（cron 依時段決定；/admin/run-daily 預設可以）
+// opts.studyFirst：這輪要不要在重試／新錄音之前先處理預查
 async function runDailyProcess(env, opts) {
   const allowRetry = !opts || opts.allowRetry !== false;
+  const studyFirst = !!(opts && opts.studyFirst);
   const QUOTA = parseInt(env.QUOTA_PER_RUN || '5', 10);
-  console.log(`[daily] start at ${new Date().toISOString()}, quota=${QUOTA}, allowRetry=${allowRetry}`);
+  console.log(`[daily] start at ${new Date().toISOString()}, quota=${QUOTA}, allowRetry=${allowRetry}, studyFirst=${studyFirst}`);
 
   // 卡死救援每輪都做（只是改狀態，不算重活）
   await detectStuckPages(env);
@@ -2884,6 +2900,22 @@ async function runDailyProcess(env, opts) {
   if (processed >= QUOTA) {
     console.log(`[daily] KV 排隊已用完 quota，跳過自動掃描`);
     return { quota: QUOTA, processed, results };
+  }
+
+  // ⭐ 預查優先（只在 STUDY_CRONS 時段）。預查約 30 個 subrequest，跟錄音相加會撞破
+  //    free tier 的 50，所以有做預查就結束本輪（錄音讓給其他三輪）。
+  if (studyFirst && processed === 0) {
+    try {
+      const sr = await processOneNewStudyDoc(env);
+      if (sr) {
+        results.push(sr);
+        console.log('[daily] 本輪用於預查，跳過重試與新錄音');
+        return { mode: 'study', results };
+      }
+      console.log('[daily] 沒有待處理的新預查，本輪照常跑錄音');
+    } catch (e) {
+      console.warn('[daily] 預查優先處理出錯（改走錄音）:', e.message);
+    }
   }
 
   // ⭐ 重試（只在 RETRY_CRONS 時段）。有做重試就跳過新檔（一次 cron 只做一件重活）
@@ -2992,10 +3024,18 @@ async function runDailyProcess(env, opts) {
 // （截至 2026-08 有 131 份的推估日期全是 2026-04-08）。自動處理它們會集體
 // 堆到同一天，所以只撿最近上傳的，舊檔維持人工處理。
 //
-// 為什麼一律 requireContentDate：日期只能靠 createdTime 時直接拒絕寫入。
-// 被拒的檔案留在待處理清單，由人在 index 點擊、手動指定日期。
+// 日期規則跟「手動點擊」一致：內文有日期優先，沒有就用 createdTime 推算當週的週三。
+// 2026-10 改的，原本一律 requireContentDate（內文沒日期就拒收）——但實際的預查文件
+// 內文根本不寫日期（例如 2026-10-21 的路得記第四章），等於永遠轉不進去。
+// 推算在這裡夠準：2026-04～10 共 23 次正常上傳**全部都在週三晚上**（聚會當天 19:30 之後），
+// getNextWednesdayTaipei 當天就會回傳同一個週三。錯了也能在 Notion 改（§1.3）。
+//
+// 整批搬檔防護：取代 requireContentDate 的保險。同一天上傳 >= STUDY_BULK_MOVE_MIN 份
+// 就視為整批搬檔（實測 2026-04-08 一次 178 份、2026-08-13 一次 48 份；正常是每週三 1～2 份），
+// 這時才要求內文日期，避免整批堆到同一天。
 const STUDY_AUTO_MAX_AGE_DAYS = 14;
 const STUDY_AUTO_MAX_CHECKS = 3;   // 最多查幾份的 dedup，控制 subrequest
+const STUDY_BULK_MOVE_MIN = 5;     // 同一天上傳幾份以上視為整批搬檔
 
 async function processOneNewStudyDoc(env) {
   const docs = await listStudyDocs(env);
@@ -3007,15 +3047,29 @@ async function processOneNewStudyDoc(env) {
   console.log(`[daily] [study] 共 ${docs.length} 份，${STUDY_AUTO_MAX_AGE_DAYS} 天內新上傳 ${fresh.length} 份`);
   if (!fresh.length) return null;
 
+  // 上傳日（台北）各有幾份，用來判斷是不是整批搬檔
+  const perDay = new Map();
+  for (const d of fresh) {
+    const day = new Date(Date.parse(d.createdTime) + TZ_OFFSET_MS).toISOString().slice(0, 10);
+    perDay.set(day, (perDay.get(day) || 0) + 1);
+  }
+
   let checks = 0;
   for (const doc of fresh) {
     if (checks >= STUDY_AUTO_MAX_CHECKS) break;
     checks++;
     if (await isStudyAlreadyProcessed(env, doc.id)) continue;
 
+    const day = new Date(Date.parse(doc.createdTime) + TZ_OFFSET_MS).toISOString().slice(0, 10);
+    const sameDay = perDay.get(day) || 1;
+    const requireContentDate = sameDay >= STUDY_BULK_MOVE_MIN;
+    if (requireContentDate) {
+      console.log(`[daily] [study] ${day} 同一天有 ${sameDay} 份，視為整批搬檔 → 要求內文日期`);
+    }
+
     // 一輪只實際處理一份（不論成功或被日期守衛擋下），避免 subrequest 失控
     console.log(`[daily] [study] 處理 ${doc.name}`);
-    const r = await processSingleStudyDoc(env, doc.id, false, true);
+    const r = await processSingleStudyDoc(env, doc.id, false, requireContentDate);
     if (r.success) {
       console.log(`[daily] [study] ✓ ${doc.name} → ${r.notionId} (${r.date})`);
     } else {
