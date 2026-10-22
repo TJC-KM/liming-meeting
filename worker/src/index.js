@@ -3438,7 +3438,7 @@ async function processAudio(env, payload, pageId) {
 const SITE_BASE = 'https://tjc-km.github.io/liming-meeting';
 const DEFAULT_INVITE_TITLE = '黎明教會線上查經';
 // LINE 預覽卡片的說明文字。{time} 會換成聚會時間（例如「晚上 8:00」），{title} 換成標題。
-const DEFAULT_OG_DESC = '每週三{time}，點開就能加入 Google Meet，也可以先複習上次的查經內容。';
+const DEFAULT_OG_DESC = '每週三{time}，點開看本週進度、加入 Google Meet。';
 const DOW_CN_LABEL = ['日', '一', '二', '三', '四', '五', '六'];
 
 // study.liming-tjc.org → 短網址（/10-29）；其他網域（workers.dev）→ /invite/10-29
@@ -3535,7 +3535,15 @@ async function getInviteConfig(env) {
   };
 }
 
-// 邀請日期之前最近一次、有預查資料的週三查經
+// 找「本週要討論的進度」。
+//
+// ⚠️ 查經聚會的流程是：① 分組討論本週進度 ② 主領預告分析**下週**進度。
+// 主領的文件當晚上傳，內容是**下一週**要討論的 —— 所以聚會日期 10/21 那份
+// 〈路得記第4章預查〉，其實是 10/28 要討論的東西。
+//
+// 因此「本週進度」= 這個日期**之前**最近一次聚會留下的那份文件，不是當天那份
+// （當天那份要等聚會結束、主領上傳後才會有，而且是再下一週的內容）。
+// 2026-10-22 使用者說明這個流程之前，頁面把它標成「上次查經」，大家只能靠默契推。
 async function findLatestStudyBefore(env, dateStr) {
   try {
     const r = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
@@ -3621,11 +3629,12 @@ async function renderInvitePage(env, url, rawDate) {
     body += '<div class="warn">還沒設定線上會議連結，請聯絡管理同工。</div>';
   }
   if (last) {
-    // 標「上次」不標「上週」，跳過一週時才不會寫錯；日期一起顯示讓人自己判斷
-    const lastDate = last.date ? formatDateLabel(last.date.slice(0, 10)) : '';
-    body += `<div class="card"><p class="label">上次查經${escapeHtml(lastDate ? '　' + lastDate : '')}</p>` +
+    // 出處那行（日期 + 主領）要留著：萬一哪週停課或沒上傳，撈到的就會是更早的文件，
+    // 看到日期不是上一次聚會就知道不對，不會被「本週進度」這個標題騙過去。
+    const srcBits = [last.date ? formatDateLabel(last.date.slice(0, 10)) : '', last.speaker].filter(Boolean);
+    body += '<div class="card"><p class="label">本週進度</p>' +
             `<p class="topic">${escapeHtml(last.topic)}</p>` +
-            (last.speaker ? `<p class="speaker">${escapeHtml(last.speaker)}</p>` : '');
+            (srcBits.length ? `<p class="speaker">${escapeHtml(srcBits.join('　'))} 預告</p>` : '');
     // 原始文件：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，不是翻頁式）。
     // 跟聚會頁的「📄 完整文件」同一招，但這裡放在前面 —— 聚會頁那份是 AI 轉出來的文字，
     // 原始文件才是撰寫者寫的原貌（圖表、事件地圖等圖片裡的字抽不出來）。
