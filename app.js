@@ -747,11 +747,25 @@ function pendingAudioBadge(item) {
   return item.driveFile && item.driveFile.autoSkip ? '🎙 錄音（不自動轉錄）' : '🎙 待轉錄';
 }
 
+// 「處理中」狀態的 key。三個渲染函式、handleProcess/handleProcessStudy、完成輪詢
+// 必須算出同一把 key，否則點下去狀態是設了、畫面卻不會變。
+//   預查 → study_<Drive fileId>
+//   錄音 → Drive fileId（同 date+type 多場活動才能各自獨立追蹤）
+//   都沒有 → 日期_類型（舊格式退路）
+//
+// ⚠️ 2026-10-22 踩過：預查項目沒有 driveFile，三個渲染函式都退回「日期_類型」，
+// 跟 handleProcessStudy 存的 study_<fileId> 對不起來 → 點下去 30 秒完全沒有任何反應
+// （轉檔其實有在跑）。改這裡時三處都要一起改，所以抽成這個函式。
+function processingKeyFor(item, y, m, dd) {
+  if (item.studyDoc && item.studyDoc.id) return 'study_' + item.studyDoc.id;
+  if (item.driveFile && item.driveFile.id) return item.driveFile.id;
+  return `${y}-${pad2(m)}-${pad2(dd)}_${item.type}`;
+}
+
 function renderCalendarEvent(item, d) {
   const st = item._state;
-  // 用 fileId 當 processing key（同 date+type 多場活動才能各自獨立追蹤）
   const fid = item.driveFile && item.driveFile.id;
-  const procKey = fid || `${d.year}-${pad2(d.month)}-${pad2(d.day)}_${item.type}`;
+  const procKey = processingKeyFor(item, d.year, d.month, d.day);
   const isProcessing = !!state.processing[procKey];
 
   let action = '';
@@ -863,7 +877,7 @@ function renderWeekCell(d) {
 function renderWeekEvent(item, d) {
   const st = item._state;
   const fid = item.driveFile && item.driveFile.id;
-  const procKey = fid || `${d.year}-${pad2(d.month)}-${pad2(d.day)}_${item.type}`;
+  const procKey = processingKeyFor(item, d.year, d.month, d.day);
   const isProcessing = !!state.processing[procKey];
 
   let action = '';
@@ -926,7 +940,7 @@ function renderDay(d) {
 function renderRow(r) {
   const st = r._state;
   const fid = r.driveFile && r.driveFile.id;
-  const procKey = fid || `${r.year}-${pad2(r.month)}-${pad2(r.day)}_${r.type}`;
+  const procKey = processingKeyFor(r, r.year, r.month, r.day);
   const isProcessing = !!state.processing[procKey];
 
   let badgeClass, badgeText, clickable = false, action = '';
