@@ -3429,6 +3429,8 @@ async function processAudio(env, payload, pageId) {
 
 const SITE_BASE = 'https://tjc-km.github.io/liming-meeting';
 const DEFAULT_INVITE_TITLE = '黎明教會線上查經';
+// LINE 預覽卡片的說明文字。{time} 會換成聚會時間（例如「晚上 8:00」），{title} 換成標題。
+const DEFAULT_OG_DESC = '每週三{time}，點開就能加入 Google Meet，也可以先複習上次的查經內容。';
 const DOW_CN_LABEL = ['日', '一', '二', '三', '四', '五', '六'];
 
 // study.liming-tjc.org → 短網址（/10-29）；其他網域（workers.dev）→ /invite/10-29
@@ -3510,6 +3512,7 @@ async function getInviteConfig(env) {
   return {
     title: await getConfigValue(env, 'STUDY_INVITE_TITLE', DEFAULT_INVITE_TITLE),
     meetUrl: await getConfigValue(env, 'STUDY_MEET_URL', ''),
+    ogDesc: await getConfigValue(env, 'STUDY_OG_DESC', DEFAULT_OG_DESC),
     ogImage: await getConfigValue(env, 'STUDY_OG_IMAGE', ''),
     time: await getConfigValue(env, 'STUDY_TIME', STUDY_MEETING_TIME),
   };
@@ -3588,9 +3591,7 @@ async function renderInvitePage(env, url, rawDate) {
 
   // 卡片：固定網址不能寫日期（LINE 只抓一次，會永遠停在第一次那天）
   const ogTitle = evergreen ? cfg.title : `${cfg.title}．${formatDateLabel(dateStr)}${timeLabel}`;
-  const ogDesc = evergreen
-    ? `每週三${timeLabel}，點開就能加入 Google Meet，也可以先複習上次的查經內容。`
-    : '點開就能加入 Google Meet。';
+  const ogDesc = cfg.ogDesc.replace(/\{time\}/g, timeLabel).replace(/\{title\}/g, cfg.title);
 
   let body = '<main>';
   body += `<h1>${escapeHtml(cfg.title)}</h1>`;
