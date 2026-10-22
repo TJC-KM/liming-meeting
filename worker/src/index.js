@@ -3701,7 +3701,10 @@ async function renderInvitePage(env, url, rawDate) {
       // 原始文件才是撰寫者寫的原貌（圖表、事件地圖等圖片裡的字抽不出來）。
       const docId = fileIdFromUrl(last.docUrl);
       if (docId) {
-        body += '<p class="doclabel">📄 原始文件</p>' +
+        // 標「上週」不是「原始」：這份文件是上一次聚會主領預告時上傳的，
+        // 內容正好就是本週要討論的進度。findLatestStudyBefore 的 13 天上限保證
+        // 它一定來自上一次聚會，不會是更早的（§3.6）。
+        body += '<p class="doclabel">📄 上週預查文件</p>' +
                 `<iframe class="docframe" src="https://drive.google.com/file/d/${escapeHtml(docId)}/preview" allow="fullscreen" loading="lazy"></iframe>` +
                 `<a class="more" href="${escapeHtml(last.docUrl)}" target="_blank" rel="noopener">↗ 在新分頁開啟</a>`;
       }
