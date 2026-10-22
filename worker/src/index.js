@@ -332,11 +332,8 @@ export default {
       // 兩者都回傳整頁 HTML（og 標籤直接寫在 head，不用轉址）。
       const invitePath = inviteSubPath(url, path);
       if (invitePath !== null && request.method === 'GET') {
-        if (invitePath === '') {
-          return htmlResponse(await renderInviteGenerator(env, url));
-        }
-        if (/^\d{1,4}-\d{1,2}(-\d{1,2})?$/.test(invitePath)) {
-          const page = await renderInvitePage(env, url, invitePath);
+        if (invitePath === '' || /^\d{1,4}-\d{1,2}(-\d{1,2})?$/.test(invitePath)) {
+          const page = await renderInvitePage(env, url, invitePath || null);
           return htmlResponse(page.body, page.status);
         }
       }
@@ -3415,18 +3412,23 @@ async function processAudio(env, payload, pageId) {
 // =============================================================================
 //
 // 幹部每週在 LINE 群組貼邀請。原本貼 meet.google.com 的原始連結，LINE 只顯示一行網址。
-// 改貼自家網址後，LINE 會抓 og 標籤顯示預覽卡片，點開是一頁「大按鈕 + 上週查經」。
+// 改貼自家網址後，LINE 會抓 og 標籤顯示預覽卡片，點開是一頁「大按鈕 + 上次查經」。
 //
-// ⚠️ **網址一定要帶日期**：LINE 會記住它第一次抓到的卡片，之後同一個網址不管內容怎麼改，
-// 卡片都不會更新。帶日期 = 每週都是新網址 = 每週都是新卡片。幹部不用自己改數字，
-// 到 /invite 按「複製邀請文字」就會連網址一起複製好。
+// **只有一個固定網址** `https://study.liming-tjc.org/`，日期自動算成接下來的那個週三。
+//
+// ⚠️ 固定網址的代價：**卡片上不能寫日期或書卷**。LINE 會記住它第一次抓到的卡片，
+// 之後同一個網址不管內容怎麼改，卡片都不會更新 —— 寫了日期就會永遠停在第一次那天。
+// 所以 og 標題／說明刻意寫成不會過時的句子（「每週三晚上 8:00」），
+// 真正會變的日期與上次進度放在**頁面內容**裡，那是每次點開才抓的，一定是最新的。
+//
+// 帶日期的網址（/10-28）仍然可用，卡片上就會有那天的日期 —— 給臨時改期、或想測卡片時用
+// （LINE 認網址，換個網址才會重抓）。平常不需要。
 //
 // 這裡直接回傳整頁 HTML（og 標籤寫在 head），不像 LimingUploader 那樣再 location.replace 轉址
 // —— 因為落地頁本來就由這個 Worker 產生，沒有 GitHub Pages 那種 og 標籤寫死的問題。
 
 const SITE_BASE = 'https://tjc-km.github.io/liming-meeting';
 const DEFAULT_INVITE_TITLE = '社青線上查經';
-const DEFAULT_INVITE_TEXT = '哈利路亞社青們\n邀請大家八點一起上線查經喔';
 const DOW_CN_LABEL = ['日', '一', '二', '三', '四', '五', '六'];
 
 // study.liming-tjc.org → 短網址（/10-29）；其他網域（workers.dev）→ /invite/10-29
@@ -3508,7 +3510,6 @@ async function getInviteConfig(env) {
   return {
     title: await getConfigValue(env, 'STUDY_INVITE_TITLE', DEFAULT_INVITE_TITLE),
     meetUrl: await getConfigValue(env, 'STUDY_MEET_URL', ''),
-    text: await getConfigValue(env, 'STUDY_INVITE_TEXT', DEFAULT_INVITE_TEXT),
     ogImage: await getConfigValue(env, 'STUDY_OG_IMAGE', ''),
     time: await getConfigValue(env, 'STUDY_TIME', STUDY_MEETING_TIME),
   };
@@ -3557,97 +3558,56 @@ font-size:22px;font-weight:700;padding:22px 16px;border-radius:14px;margin-botto
 .speaker{font-size:17px;color:#5f5e5a;margin:0 0 16px}
 .more{display:inline-block;font-size:18px;color:#1d7a52;text-decoration:none;font-weight:700}
 .foot{font-size:16px;color:#7a7873;text-align:center;margin:28px 0 0}
-.warn{background:#fdf0e3;border-radius:14px;padding:18px;font-size:17px;margin-bottom:28px}
-label{display:block;font-size:17px;font-weight:700;margin:20px 0 8px}
-input{width:100%;font-size:19px;padding:14px;border:1px solid #cfccc3;border-radius:10px;
-background:#fff;font-family:inherit}
-pre{background:#fff;border-radius:14px;padding:18px;font-size:17px;white-space:pre-wrap;
-word-break:break-all;margin:8px 0 0;font-family:inherit;line-height:1.8}
-button{width:100%;font-size:21px;font-weight:700;padding:20px;border:0;border-radius:14px;
-background:#1d7a52;color:#fff;margin-top:20px;font-family:inherit}
-button:active{background:#165f40}
-.hint{font-size:15px;color:#7a7873;margin:12px 0 0}`;
+.warn{background:#fdf0e3;border-radius:14px;padding:18px;font-size:17px;margin-bottom:28px}`;
 
+// rawDate = null → 固定網址：日期自動算成接下來的那個週三，卡片用不會過時的文案
 async function renderInvitePage(env, url, rawDate) {
-  const dateStr = normalizeInviteDate(rawDate);
+  const evergreen = !rawDate;
+  const dateStr = evergreen ? nextWednesdayISO(taipeiTodayISO()) : normalizeInviteDate(rawDate);
   if (!dateStr) {
     return {
       status: 404,
       body: htmlShell('查不到這個日期',
-        '<main><h1>查不到這個日期</h1><p class="when">網址可能打錯了，請再跟幹部要一次。</p></main>', {}),
+        '<main><h1>查不到這個日期</h1><p class="when">網址可能打錯了，' +
+        `請改用 <a href="${escapeHtml(url.origin)}/">${escapeHtml(url.host)}</a>。</p></main>`, {}),
     };
   }
 
   const cfg = await getInviteConfig(env);
-  const weekTopic = (url.searchParams.get('t') || '').trim().slice(0, 40);
+  const timeLabel = formatTimeLabel(cfg.time);
   const last = await findLatestStudyBefore(env, dateStr);
 
-  const whenLabel = `${formatDateLabel(dateStr)}${formatTimeLabel(cfg.time)}`;
-  const ogTitle = `${cfg.title}．${whenLabel}`;
-  const lastLabel = last ? `${last.topic}${last.speaker ? `（${last.speaker}）` : ''}` : '';
-  const ogDesc = weekTopic
-    ? `本週查${weekTopic}。${lastLabel ? `上週：${lastLabel}` : ''}`.trim()
-    : (lastLabel ? `上週查了${lastLabel}，點開可以先複習` : '點開就能加入線上查經');
+  // 卡片：固定網址不能寫日期（LINE 只抓一次，會永遠停在第一次那天）
+  const ogTitle = evergreen ? cfg.title : `${cfg.title}．${formatDateLabel(dateStr)}${timeLabel}`;
+  const ogDesc = evergreen
+    ? `每週三${timeLabel}，點開就能加入 Google Meet，也可以先複習上次的查經內容。`
+    : '點開就能加入 Google Meet。';
 
   let body = '<main>';
   body += `<h1>${escapeHtml(cfg.title)}</h1>`;
-  body += `<p class="when">${escapeHtml(whenLabel)}</p>`;
-  if (weekTopic) {
-    body += '<div class="card" style="margin-bottom:28px"><p class="label">本週進度</p>' +
-            `<p class="topic">${escapeHtml(weekTopic)}</p></div>`;
-  }
+  body += `<p class="when">${escapeHtml(formatDateLabel(dateStr) + timeLabel)}</p>`;
   if (cfg.meetUrl) {
     body += `<a class="join" href="${escapeHtml(cfg.meetUrl)}">📹 加入 Google Meet</a>`;
   } else {
     body += '<div class="warn">還沒設定線上會議連結，請聯絡管理同工。</div>';
   }
   if (last) {
-    body += '<div class="card"><p class="label">上週查經</p>' +
+    // 標「上次」不標「上週」，跳過一週時才不會寫錯；日期一起顯示讓人自己判斷
+    const lastDate = last.date ? formatDateLabel(last.date.slice(0, 10)) : '';
+    body += `<div class="card"><p class="label">上次查經${escapeHtml(lastDate ? '　' + lastDate : '')}</p>` +
             `<p class="topic">${escapeHtml(last.topic)}</p>` +
             (last.speaker ? `<p class="speaker">${escapeHtml(last.speaker)}</p>` : '') +
             `<a class="more" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">看預查內容 →</a></div>`;
   }
-  body += `<p class="foot">每週三${escapeHtml(formatTimeLabel(cfg.time))}，歡迎隨時加入</p></main>`;
+  body += `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p></main>`;
 
   return {
     status: 200,
-    body: htmlShell(ogTitle, body, {
+    body: htmlShell(evergreen ? cfg.title : ogTitle, body, {
       ogTitle, ogDesc, ogImage: cfg.ogImage,
-      ogUrl: url.origin + url.pathname + (weekTopic ? `?t=${encodeURIComponent(weekTopic)}` : ''),
+      ogUrl: url.origin + (evergreen ? '/' : url.pathname),
     }),
   };
-}
-
-async function renderInviteGenerator(env, url) {
-  const cfg = await getInviteConfig(env);
-  const nextWed = nextWednesdayISO(taipeiTodayISO());
-  const shortBase = /^study\./i.test(url.hostname) ? `${url.origin}/` : `${url.origin}/invite/`;
-  const boot = JSON.stringify({ base: shortBase, text: cfg.text });
-
-  let body = '<main><h1>產生本週邀請</h1>';
-  body += '<p class="when">填好按「複製邀請文字」，再貼到 LINE 群組。</p>';
-  body += `<label for="d">查經日期</label><input type="date" id="d" value="${nextWed}">`;
-  body += '<label for="t">本週進度（可不填）</label>' +
-          '<input type="text" id="t" placeholder="例如：路得記第五章">';
-  body += '<pre id="preview"></pre>';
-  body += '<button type="button" id="copy">複製邀請文字</button>';
-  body += '<p class="hint">每週的網址都不一樣，LINE 才會顯示當週的預覽卡片。</p></main>';
-  body += '<' + `script>(function(){var C=${boot};` +
-    'var d=document.getElementById("d"),t=document.getElementById("t"),' +
-    'p=document.getElementById("preview"),b=document.getElementById("copy");' +
-    'function build(){var v=d.value;if(!v)return C.text;' +
-    'var u=C.base+(+v.slice(5,7))+"-"+(+v.slice(8,10));' +
-    'var tp=t.value.trim();if(tp)u+="?t="+encodeURIComponent(tp);' +
-    'return C.text+"\\n"+u;}' +
-    'function sync(){p.textContent=build();}' +
-    'd.addEventListener("input",sync);t.addEventListener("input",sync);sync();' +
-    'b.addEventListener("click",function(){var s=build();' +
-    'if(navigator.clipboard&&navigator.clipboard.writeText){' +
-    'navigator.clipboard.writeText(s).then(function(){b.textContent="已複製，去 LINE 貼上";},' +
-    'function(){window.prompt("請手動複製：",s);});}' +
-    'else{window.prompt("請手動複製：",s);}});})();<' + '/script>';
-
-  return htmlShell('產生本週邀請', body, {});
 }
 
 function htmlShell(title, body, og) {
