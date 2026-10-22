@@ -209,6 +209,8 @@ a{color:inherit;text-decoration:none}
 .section{background:var(--bg);border:1px solid var(--bd);border-radius:var(--radius-lg);padding:18px 20px;margin-bottom:14px}
 .section-title{font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px;display:flex;align-items:center;gap:6px;text-transform:uppercase;letter-spacing:.5px}
 .section-body{font-size:14px;line-height:1.8;white-space:pre-wrap;color:var(--tx)}
+.sched-lead{font-size:13px;color:var(--tx2);margin-top:8px}
+.senior .sched-lead{font-size:15px}
 .summary-box{background:var(--accent-bg);border:1px solid var(--accent);border-radius:var(--radius);padding:14px 16px;color:var(--accent-tx);font-size:14px;line-height:1.8;white-space:pre-wrap}
 
 .md-subhead{font-size:15px;font-weight:600;color:var(--accent);margin:18px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--bd)}

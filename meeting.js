@@ -573,6 +573,20 @@
     var hasSlides = !!m.slidesUrl;
     var hasContent = m.info || m.summary || hasBody || hasSlides;
     var gated = !!m.audioUrl && hasContent;
+
+    // 當晚查經進度：來自每月的聚會安排表，由 worker 以「同一天的週三晚間」配對。
+    // 跟這一筆掛的文件是同一場聚會的**不同部分** —— 文件是當晚預告下週的教材，
+    // 這段是當晚分組討論的進度。放在 AI 聲明之外，因為它是人寫的安排表、不是 AI 產出。
+    if (m.schedule && m.schedule.text) {
+      h += '<div class="section">';
+      h += '<div class="section-title">🗓 當晚查經進度</div>';
+      h += '<div class="section-body">' + escapeHtml(m.schedule.text) + '</div>';
+      if (m.schedule.lead) {
+        h += '<div class="sched-lead">領會：' + escapeHtml(m.schedule.lead) + '</div>';
+      }
+      h += '</div>';
+    }
+
     if (gated) h += aiDisclaimerHTML(m);
 
     h += '<div class="meeting-content"' + (gated ? ' id="meetingContent" hidden' : '') + '>';

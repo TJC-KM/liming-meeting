@@ -1593,6 +1593,17 @@ async function getMeeting(env, id) {
       result.body = blockArr.map(b => b.text).filter(Boolean).join('\n\n');
     }
   } catch (e) { /* page body 失敗不影響主回應 */ }
+
+  // 配對安排表：同一天的「週三晚間」就是一對（§3.7）。
+  // 兩邊講的是同一場聚會的不同部分 —— 這筆紀錄掛的文件是當晚**預告下週**的教材，
+  // 安排表那段寫的是當晚**分組討論**的進度。併在一起看才完整。
+  // 只花一次 KV 讀取，查不到就不附（舊聚會多半沒匯過那個月的安排表）。
+  if (result.type === '週三晚間' && result.date) {
+    try {
+      const sched = await getScheduleEntry(env, result.date.slice(0, 10));
+      if (sched) result.schedule = { text: sched.text, lead: sched.lead };
+    } catch (e) { /* 配不到不影響主回應 */ }
+  }
   return result;
 }
 
@@ -3731,7 +3742,8 @@ function htmlShell(title, body, og) {
 // （2026-10-22 使用者的要求）。真正靠結構的只有「星期欄 == 三」跟日期欄，那個穩定得多。
 const DEFAULT_SCHEDULE_FOLDER_ID = '1dCj76vGVwzOLnzUg2gPpbCne5HSxz7N1';   // Drive「05安排表」
 const SCHEDULE_KV_PREFIX = 'schedule:';
-const SCHEDULE_KV_TTL_SEC = 100 * 24 * 60 * 60;   // 100 天，跨月後舊的自己過期
+// 不設過期：聚會頁會配對歷史月份的安排表（§3.7），過期了舊頁面就看不到進度。
+// 一個月一筆約 1KB，放十年也才一百多 KB。
 
 // 極簡 CSV 解析：安排表很多格有逗號與換行（都被引號包起來），不能用 split(',')
 function parseCsv(text) {
@@ -3843,7 +3855,7 @@ async function importSchedule(env, year, month) {
   if (env.PROCESS_QUEUE) {
     await env.PROCESS_QUEUE.put(key, JSON.stringify({
       entries, fileName: file.name, fileModified: file.modifiedTime, importedAt: new Date().toISOString(),
-    }), { expirationTtl: SCHEDULE_KV_TTL_SEC });
+    }));
   }
   console.log(`[schedule] ${file.name} → ${entries.length} 個週三`);
   return { ok: true, count: entries.length, entries, fileName: file.name };
