@@ -3508,6 +3508,11 @@ function formatTimeLabel(hhmm) {
 }
 
 // 全部可在 Config Sheet 調，改完 5 分鐘生效、不用重新部署
+// 試算表的開關值寬鬆認定 —— 人手填的，Y / y / 是 / 1 / TRUE 都算開
+function isConfigOn(v) {
+  return /^(y|yes|true|1|是|on|開)$/i.test(String(v == null ? '' : v).trim());
+}
+
 async function getInviteConfig(env) {
   return {
     title: await getConfigValue(env, 'STUDY_INVITE_TITLE', DEFAULT_INVITE_TITLE),
@@ -3515,6 +3520,10 @@ async function getInviteConfig(env) {
     ogDesc: await getConfigValue(env, 'STUDY_OG_DESC', DEFAULT_OG_DESC),
     ogImage: await getConfigValue(env, 'STUDY_OG_IMAGE', ''),
     time: await getConfigValue(env, 'STUDY_TIME', STUDY_MEETING_TIME),
+    // 「上次查經」那塊抓的是 Notion 的最新一筆。那筆如果是錯的（日期跑掉、抓到不相干的紀錄），
+    // 在試算表把 STUDY_HIDE_LAST 填 Y 就整塊不顯示，頁面只剩 Google Meet 按鈕。
+    // 5 分鐘內生效，不用重新部署，也不用先去修 Notion。
+    hideLast: isConfigOn(await getConfigValue(env, 'STUDY_HIDE_LAST', '')),
   };
 }
 
@@ -3587,7 +3596,9 @@ async function renderInvitePage(env, url, rawDate) {
 
   const cfg = await getInviteConfig(env);
   const timeLabel = formatTimeLabel(cfg.time);
-  const last = await findLatestStudyBefore(env, dateStr);
+  // 關掉時連查都不查 —— 省一個 Notion 請求，也確保錯的資料不會從別的地方漏出來
+  const last = cfg.hideLast ? null : await findLatestStudyBefore(env, dateStr);
+  if (cfg.hideLast) console.log('[invite] STUDY_HIDE_LAST 開啟，不顯示上次查經');
 
   // 卡片：固定網址不能寫日期（LINE 只抓一次，會永遠停在第一次那天）
   const ogTitle = evergreen ? cfg.title : `${cfg.title}．${formatDateLabel(dateStr)}${timeLabel}`;
