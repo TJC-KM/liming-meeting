@@ -931,10 +931,10 @@ const DEFAULT_GEMINI_PROMPT = `你是教會聚會紀錄整理助手。請仔細�
 // 1 分鐘 TTL 的最壞情況是每個 isolate 每分鐘讀一次，離上限還很遠，
 // 但設定改完的生效時間比原本的 5 分鐘短很多（2026-10-22 從 5 分鐘改過來）。
 //
-// 兩本試算表（2026-10-23）：CONFIG_SHEET_ID 是使用者自己的「查經聚會轉檔紀錄」，目前只放查經相關的
-// STUDY_* 設定；其餘（講員清單、略過關鍵字、Gemini prompt）還在 LINE 小幫手那本，
+// 兩本試算表（2026-10-23）：CONFIG_SHEET_ID 是使用者自己的「查經聚會轉檔紀錄」，只放查經邀請頁的
+// STUDY_* 設定；錄音轉檔用的（講員清單、略過關鍵字、Gemini prompt）留在 LINE 小幫手那本，
 // 用 CONFIG_FALLBACK_SHEET_ID 補讀 —— 主表有的 key 以主表為準，沒有的才看舊表。
-// 哪天全部搬到主表，把 CONFIG_FALLBACK_SHEET_ID 拿掉就好，程式不用改。
+// ⚠️ 分兩本是刻意的，不要合併：轉檔設定已經穩定，使用者決定不搬、不動。
 let _configCache = null;
 let _configCacheTime = 0;
 const CONFIG_CACHE_TTL_MS = 60 * 1000;
