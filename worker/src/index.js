@@ -3774,7 +3774,7 @@ async function renderInvitePage(env, url, rawDate) {
     // 題目來自試算表「問題討論」（轉檔時從上週文件抽出，人可以改），放在文件前面：
     // 來的人要先看的是題目，文件是給想深入的人往下捲
     if (questions.length) {
-      body += '<p class="doclabel">💬 問題討論</p><ol class="qlist">' +
+      body += '<p class="doclabel">💬 預查提供的問題討論（僅參考，以當日帶領人員分享為主）</p><ol class="qlist">' +
               questions.map(q => `<li>${escapeHtml(q.text)}</li>`).join('') + '</ol>';
     }
     // 文件可能還沒上傳（或還沒轉），這時只有安排表那段文字，照樣有用
