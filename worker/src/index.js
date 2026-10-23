@@ -236,6 +236,23 @@ export default {
         return cors(json(await importSchedule(env, y, m)), origin);
       }
 
+      // -- Admin: 補抽問題討論到試算表（?id=<Notion 頁面 ID> 或 ?month=YYYY-MM；dry=1 只看、force=1 重抽）--
+      if (path === '/admin/extract-questions' && (request.method === 'POST' || request.method === 'GET')) {
+        return cors(json(await handleExtractQuestions(env, params)), origin);
+      }
+
+      // -- Admin: 檢查資料試算表連得到、工作表齊不齊（第一次設定時用）--
+      if (path === '/admin/data-sheet' && request.method === 'GET') {
+        try {
+          const tabs = await ensureDataSheetTabs(env);
+          const schedule = await readDataTab(env, 'schedule', true);
+          const questions = await readDataTab(env, 'questions', true);
+          return cors(json({ ok: true, sheetId: dataSheetId(env), tabs, rows: { schedule: schedule.length, questions: questions.length } }), origin);
+        } catch (e) {
+          return cors(json({ ok: false, sheetId: dataSheetId(env), error: e.message }), origin);
+        }
+      }
+
       // -- Admin: 手動觸發 daily process（同步等結果）--
       // ?limit=N 暫時覆寫 QUOTA_PER_RUN
       if (path === '/admin/run-daily' && (request.method === 'POST' || request.method === 'GET')) {
@@ -913,9 +930,31 @@ const DEFAULT_GEMINI_PROMPT = `你是教會聚會紀錄整理助手。請仔細�
 // 為什麼是 1 分鐘：Sheets API 讀取上限是每分鐘 60 次（每個使用者，這裡是服務帳號）。
 // 1 分鐘 TTL 的最壞情況是每個 isolate 每分鐘讀一次，離上限還很遠，
 // 但設定改完的生效時間比原本的 5 分鐘短很多（2026-10-22 從 5 分鐘改過來）。
+//
+// 兩本試算表（2026-10-23）：CONFIG_SHEET_ID 是使用者自己的「查經聚會轉檔紀錄」，目前只放查經相關的
+// STUDY_* 設定；其餘（講員清單、略過關鍵字、Gemini prompt）還在 LINE 小幫手那本，
+// 用 CONFIG_FALLBACK_SHEET_ID 補讀 —— 主表有的 key 以主表為準，沒有的才看舊表。
+// 哪天全部搬到主表，把 CONFIG_FALLBACK_SHEET_ID 拿掉就好，程式不用改。
 let _configCache = null;
 let _configCacheTime = 0;
 const CONFIG_CACHE_TTL_MS = 60 * 1000;
+
+// 讀一本的 Config!A:B 成 { key: value }；讀不到回 null（呼叫端決定要不要用快取）
+async function readConfigSheet(token, sheetId, label) {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Config!A:B`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) {
+    console.warn(`[loadConfig] ${label} HTTP ${r.status}`);
+    return null;
+  }
+  const rows = (await r.json()).values || [];
+  const map = {};
+  for (let i = 1; i < rows.length; i++) {  // 跳過標題列
+    const [k, v] = rows[i] || [];
+    if (k) map[String(k).trim()] = v != null ? String(v) : '';
+  }
+  return map;
+}
 
 async function loadConfig(env) {
   if (!env.CONFIG_SHEET_ID) return {};
@@ -924,22 +963,17 @@ async function loadConfig(env) {
 
   try {
     const token = await getGoogleAccessToken(env);
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${env.CONFIG_SHEET_ID}/values/Config!A:B`;
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!r.ok) {
-      console.warn(`[loadConfig] HTTP ${r.status}`);
-      return _configCache || {};
-    }
-    const data = await r.json();
-    const rows = data.values || [];
-    const map = {};
-    for (let i = 1; i < rows.length; i++) {  // 跳過標題列
-      const [k, v] = rows[i];
-      if (k) map[String(k).trim()] = v != null ? String(v) : '';
+    const primary = await readConfigSheet(token, env.CONFIG_SHEET_ID, '主表');
+    if (!primary) return _configCache || {};
+    let map = primary;
+    if (env.CONFIG_FALLBACK_SHEET_ID) {
+      // 舊表讀不到就只用主表 —— 查經頁面不該因為 LINE 小幫手那本出問題而壞掉
+      const fallback = await readConfigSheet(token, env.CONFIG_FALLBACK_SHEET_ID, '舊表');
+      if (fallback) map = Object.assign({}, fallback, primary);
     }
     _configCache = map;
     _configCacheTime = now;
-    console.log(`[loadConfig] 讀到 ${Object.keys(map).length} 條設定`);
+    console.log(`[loadConfig] 讀到 ${Object.keys(map).length} 條設定（主表 ${Object.keys(primary).length}）`);
     return map;
   } catch (e) {
     console.warn(`[loadConfig] error: ${e.message}`);
@@ -1979,6 +2013,15 @@ function parseDateFromText(text) {
     if (roc >= 100 && roc <= 200 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)
       return `${roc + 1911}-${pad2(mo)}-${pad2(d)}`;
   }
+  // 年在後：10.14.2026、10/14/2026 → 2026-10-14（月日先後不定，哪個超過 12 就是日）
+  m = text.match(/(?<!\d)(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})(?!\d)/);
+  if (m) {
+    let a = +m[1], b = +m[2];
+    const y = +m[3];
+    if (a > 12 && b <= 12) [a, b] = [b, a];
+    if (y >= 2018 && y <= 2100 && a >= 1 && a <= 12 && b >= 1 && b <= 31)
+      return `${y}-${pad2(a)}-${pad2(b)}`;
+  }
   // 2 位西元短年：26/05/27、26-5-27 → 2026-05-27（前後不接其他數字，避免誤抓）
   m = text.match(/(?<!\d)(\d{2})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})(?!\d)/);
   if (m) {
@@ -2442,8 +2485,8 @@ function textToNotionBlocks(text) {
       const content = line.replace(/^#+\s+/, '');
       blocks.push(makeBlock(level <= 1 ? 'heading_2' : 'heading_3', content));
     }
-    // 中文標號當小標：「一、」「二、」... (但要夠短，避免長段落被誤判)
-    else if (line.match(/^[一二三四五六七八九十]+、/) && line.length < 60) {
+    // 中文標號當小標：「一、」「二、」「壹、」「貳、」... (但要夠短，避免長段落被誤判)
+    else if (line.match(/^[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+、/) && line.length < 60) {
       blocks.push(makeBlock('heading_3', line));
     }
     // bullet
@@ -2594,6 +2637,11 @@ async function processSingleStudyDoc(env, fileId, overwrite, requireContentDate,
       console.log(`[study/process] 主體 100 已寫，附加 ${allChildren.length - 100} blocks`);
       await notionAppendChildrenBatched(env, data.id, allChildren.slice(100));
     }
+    // 問題討論抽到試算表；失敗不影響轉檔（之後可用 /admin/extract-questions 補）
+    try {
+      const q = await saveDiscussionQuestions(env, { notionId: data.id, docDate: dateStr, topic, text, force: !!overwrite });
+      console.log(`[study/process] 問題討論 ${q.count || 0} 題${q.error ? `（${q.error}）` : ''}`);
+    } catch (e) { console.warn('[study/process] 問題討論寫入失敗（不影響轉檔）:', e.message); }
     return {
       success: true,
       notionId: data.id,
@@ -2675,6 +2723,9 @@ async function handleStudySync(env, limit) {
       if (allChildren.length > 100) {
         await notionAppendChildrenBatched(env, data.id, allChildren.slice(100));
       }
+      try {
+        await saveDiscussionQuestions(env, { notionId: data.id, docDate: dateStr, topic, text });
+      } catch (e) { console.warn('[study] 問題討論寫入失敗（不影響轉檔）:', e.message); }
 
       result.processed.push({
         name: doc.name,
@@ -3509,6 +3560,11 @@ function taipeiTodayISO() {
   return new Date(Date.now() + TZ_OFFSET_MS).toISOString().slice(0, 10);
 }
 
+// 寫進試算表給人看的時間（台北時間，到分）
+function taipeiNowLabel() {
+  return new Date(Date.now() + TZ_OFFSET_MS).toISOString().slice(0, 16).replace('T', ' ');
+}
+
 function isValidISODate(iso) {
   const d = new Date(iso + 'T00:00:00Z');
   return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso;
@@ -3557,7 +3613,7 @@ function formatTimeLabel(hhmm) {
   return `${period} ${h % 12 === 0 ? 12 : h % 12}:${m[2]}`;
 }
 
-// 全部可在 Config Sheet 調，改完 5 分鐘生效、不用重新部署
+// 全部可在 Config Sheet 調，改完 1 分鐘生效、不用重新部署
 // 試算表的開關值寬鬆認定 —— 人手填的，Y / y / 是 / 1 / TRUE 都算開
 function isConfigOn(v) {
   return /^(y|yes|true|1|是|on|開)$/i.test(String(v == null ? '' : v).trim());
@@ -3572,9 +3628,22 @@ async function getInviteConfig(env) {
     time: await getConfigValue(env, 'STUDY_TIME', STUDY_MEETING_TIME),
     // 「上次查經」那塊抓的是 Notion 的最新一筆。那筆如果是錯的（日期跑掉、抓到不相干的紀錄），
     // 在試算表把 STUDY_HIDE_LAST 填 Y 就整塊不顯示，頁面只剩 Google Meet 按鈕。
-    // 5 分鐘內生效，不用重新部署，也不用先去修 Notion。
+    // 1 分鐘內生效，不用重新部署，也不用先去修 Notion。
     hideLast: isConfigOn(await getConfigValue(env, 'STUDY_HIDE_LAST', '')),
+    // 給預查撰寫者的檔案，放在 Drive、連結貼進試算表；換新版範本只要換 Drive 上的檔
+    templateUrl: await getConfigValue(env, 'STUDY_TEMPLATE_URL', ''),
+    guideUrl: await getConfigValue(env, 'STUDY_GUIDE_URL', ''),
   };
+}
+
+// 範本要「下載」不是「預覽」：Drive 檔案頁換成直接下載的網址。
+// 檔案被存成 Google 文件時（docs.google.com/document）改用匯出 Word。
+function driveDownloadUrl(u) {
+  const id = fileIdFromUrl(u);
+  if (!id) return u;
+  if (/docs\.google\.com\/document\//.test(u)) return `https://docs.google.com/document/d/${id}/export?format=docx`;
+  if (/drive\.google\.com\//.test(u)) return `https://drive.google.com/uc?export=download&id=${id}`;
+  return u;
 }
 
 // 找「本週要討論的進度」。
@@ -3645,9 +3714,16 @@ font-size:22px;font-weight:700;padding:22px 16px;border-radius:14px;margin-botto
 text-align:center;font-size:19px;font-weight:700;padding:16px;border-radius:12px;margin-top:16px}
 .btn2:active{background:#eef6f1}
 .doclabel{font-size:15px;color:#7a7873;margin:18px 0 8px}
+.qlist{margin:0;padding-left:26px;font-size:18px;line-height:1.7}
+.qlist li{margin:0 0 10px}
 .docframe{width:100%;height:62vh;min-height:360px;border:1px solid #e3e0d7;border-radius:10px;
 background:#fff;display:block}
 .foot{font-size:16px;color:#7a7873;text-align:center;margin:28px 0 0}
+.tools{border-top:1px solid #e3e0d7;margin:28px 0 0;padding-top:16px;text-align:center}
+.toolslabel{font-size:14px;color:#7a7873;margin:0 0 6px}
+.mini{display:inline-block;border:1px solid #1d7a52;border-radius:999px;padding:8px 16px;margin:4px;
+color:#1d7a52;font-size:16px;font-weight:700;text-decoration:none;background:#fff}
+.mini:active{background:#eef6f1}
 .warn{background:#fdf0e3;border-radius:14px;padding:18px;font-size:17px;margin-bottom:28px}`;
 
 // rawDate = null → 固定網址：日期自動算成接下來的那個週三，卡片用不會過時的文案
@@ -3668,6 +3744,7 @@ async function renderInvitePage(env, url, rawDate) {
   // 關掉時連查都不查 —— 省請求，也確保錯的資料不會從別的地方漏出來
   const sched = cfg.hideLast ? null : await getScheduleEntry(env, dateStr);
   const last = cfg.hideLast ? null : await findLatestStudyBefore(env, dateStr);
+  const questions = cfg.hideLast ? [] : await getDiscussionQuestions(env, dateStr);
   if (cfg.hideLast) console.log('[invite] STUDY_HIDE_LAST 開啟，不顯示本週進度');
 
   // 卡片：固定網址不能寫日期（LINE 只抓一次，會永遠停在第一次那天）
@@ -3682,7 +3759,7 @@ async function renderInvitePage(env, url, rawDate) {
   } else {
     body += '<div class="warn">還沒設定線上會議連結，請聯絡管理同工。</div>';
   }
-  if (sched || last) {
+  if (sched || last || questions.length) {
     body += '<div class="card"><p class="label">本週進度</p>';
     if (sched) {
       // 安排表那格是人手打的自由文字（「團契查經，帶領：…，進度：…。預查：…。」），
@@ -3693,6 +3770,12 @@ async function renderInvitePage(env, url, rawDate) {
       // 安排表還沒匯入（或那個月沒有檔）時的退路：用上週預告文件的主題。
       // 只放主題不放人名 —— 文件上掛的是上週預告的那位，不是今晚帶分組討論的人。
       body += `<p class="topic">${escapeHtml(last.topic)}</p>`;
+    }
+    // 題目來自試算表「問題討論」（轉檔時從上週文件抽出，人可以改），放在文件前面：
+    // 來的人要先看的是題目，文件是給想深入的人往下捲
+    if (questions.length) {
+      body += '<p class="doclabel">💬 問題討論</p><ol class="qlist">' +
+              questions.map(q => `<li>${escapeHtml(q.text)}</li>`).join('') + '</ol>';
     }
     // 文件可能還沒上傳（或還沒轉），這時只有安排表那段文字，照樣有用
     if (last) {
@@ -3714,7 +3797,15 @@ async function renderInvitePage(env, url, rawDate) {
     }
     body += '</div>';
   }
-  body += `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p></main>`;
+  body += `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p>`;
+  // 跟「本週進度」無關，STUDY_HIDE_LAST 開著時照樣顯示
+  if (cfg.templateUrl || cfg.guideUrl) {
+    body += '<div class="tools"><p class="toolslabel">給預查文件撰寫者</p>';
+    if (cfg.templateUrl) body += `<a class="mini" href="${escapeHtml(driveDownloadUrl(cfg.templateUrl))}">📝 下載範本（Word）</a>`;
+    if (cfg.guideUrl) body += `<a class="mini" href="${escapeHtml(cfg.guideUrl)}" target="_blank" rel="noopener">📖 撰寫說明</a>`;
+    body += '</div>';
+  }
+  body += '</main>';
 
   return {
     status: 200,
@@ -3869,6 +3960,12 @@ async function importSchedule(env, year, month) {
     return { ok: false, error: '解析不到任何週三（格式可能變了）', count: 0, fileName: file.name };
   }
 
+  // 正本寫試算表（使用者看得到、改得了）；KV 只是試算表讀不到時的退路
+  let sheet = null, sheetError = null;
+  if (dataSheetId(env)) {
+    try { sheet = await writeScheduleToSheet(env, entries, file.name); }
+    catch (e) { sheetError = e.message; console.warn('[schedule] 寫入試算表失敗:', e.message); }
+  }
   const key = `${SCHEDULE_KV_PREFIX}${year}-${pad2(month)}`;
   if (env.PROCESS_QUEUE) {
     await env.PROCESS_QUEUE.put(key, JSON.stringify({
@@ -3876,11 +3973,22 @@ async function importSchedule(env, year, month) {
     }));
   }
   console.log(`[schedule] ${file.name} → ${entries.length} 個週三`);
-  return { ok: true, count: entries.length, entries, fileName: file.name };
+  return { ok: true, count: entries.length, entries, fileName: file.name, sheet, sheetError };
 }
 
 // 查某個日期的安排表內容。沒有就回 null（頁面自己決定怎麼退場）。
+// 試算表讀得到就以它為準 —— 使用者刪掉的列就是不要顯示，不能再去 KV 翻出來。
 async function getScheduleEntry(env, dateStr) {
+  if (dataSheetId(env)) {
+    try {
+      const row = (await readDataTab(env, 'schedule')).find(r => cellText(r, 0) === dateStr);
+      if (!row) return null;
+      const text = cellText(row, 4) || cellText(row, 2);
+      return text ? { date: dateStr, text, lead: cellText(row, 3), manual: !!cellText(row, 4) } : null;
+    } catch (e) {
+      console.warn('[schedule] 試算表讀取失敗，退回 KV:', e.message);
+    }
+  }
   if (!env.PROCESS_QUEUE) return null;
   try {
     const cached = await env.PROCESS_QUEUE.get(`${SCHEDULE_KV_PREFIX}${dateStr.slice(0, 7)}`, 'json');
@@ -3900,13 +4008,11 @@ async function refreshSchedulesWeekly(env) {
   const today = taipeiTodayISO();
   const months = [...new Set([today.slice(0, 7), nextWednesdayISO(today).slice(0, 7)])];
 
-  // ① 缺的月份隨時補 —— 只讀 KV，不花任何對外請求。
+  // ① 缺的月份隨時補（看試算表，讀不到才看 KV）。
   //    不能純粹等星期一：月初換新檔時（例如 12/1 是星期二）會卡到下週一頁面才有進度。
   const missing = [];
   for (const ym of months) {
-    let has = false;
-    try { has = !!(await env.PROCESS_QUEUE.get(`${SCHEDULE_KV_PREFIX}${ym}`)); } catch (e) { /* 當作沒有 */ }
-    if (!has) missing.push(ym);
+    if (!(await scheduleMonthPresent(env, ym))) missing.push(ym);
   }
 
   // ② 資料都在的話，只有星期一重匯一次（安排表偶爾會被中途修改）
@@ -3935,4 +4041,274 @@ async function refreshSchedulesWeekly(env) {
     try { await env.PROCESS_QUEUE.put(weeklyKey, today, { expirationTtl: 14 * 24 * 60 * 60 }); }
     catch (e) { /* 寫不進去頂多今天多匯幾次 */ }
   }
+}
+
+// === 資料試算表：安排表 + 問題討論（2026-10-23）===
+//
+// 使用者要能自己看、自己改，所以不放 KV。試算表「查經聚會轉檔紀錄」（wrangler.toml 的
+// DATA_SHEET_ID）兩個工作表，不存在會自動建：
+//
+//   安排表    A日期 B星期 C系統匯入 D領會 E人工修正 F來源檔 G匯入時間
+//   問題討論  A討論日期 B文件日期 C主題 D題號 E題目 F來源 G抽取時間
+//
+// 系統只寫自己的欄，人改的欄不碰：
+//   - 安排表每週重匯會覆蓋 C/D/F/G，E 永遠保留；畫面顯示 E 有填就用 E，否則用 C。
+//   - 問題討論同一份文件（F = Notion 頁面 ID）只寫一次；之後 E 隨人改、整列可刪可加。
+//     人工加的列只要填 A 與 E 就會顯示。
+// 讀取快取 1 分鐘（跟 Config 一樣的理由：Sheets API 每分鐘 60 次讀取上限）。
+// 試算表讀不到時安排表退回 KV（匯入時仍會寫一份），問題討論就當作沒有。
+const SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
+const DATA_SHEET_TABS = {
+  schedule: { title: '安排表', header: ['日期', '星期', '系統匯入', '領會', '人工修正', '來源檔', '匯入時間'] },
+  questions: { title: '問題討論', header: ['討論日期', '文件日期', '主題', '題號', '題目', '來源', '抽取時間'] },
+};
+const DATA_CACHE_TTL_MS = 60 * 1000;
+const _dataTabCache = {};    // 工作表名稱 → { rows, time }
+let _dataSheetMeta = null;   // 工作表名稱 → sheetId（刪列要用）
+
+function dataSheetId(env) { return env.DATA_SHEET_ID || ''; }
+function cellText(row, i) { return row && row[i] != null ? String(row[i]).trim() : ''; }
+function tabRange(title, a1) { return encodeURIComponent(`'${title}'!${a1}`); }
+
+async function sheetsFetch(env, pathAndQuery, init) {
+  const token = await getGoogleAccessToken(env);
+  const res = await fetch(`${SHEETS_API}/${dataSheetId(env)}${pathAndQuery}`, Object.assign({}, init || {}, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+  }));
+  if (!res.ok) {
+    // 工作表被人改名／刪掉時中繼資料就錯了，清掉讓下一次重抓
+    if (res.status === 400 || res.status === 404) _dataSheetMeta = null;
+    throw new Error(`Sheets ${res.status}: ${(await res.text()).substring(0, 200)}`);
+  }
+  return res.json();
+}
+
+// 缺的工作表補建（含標題列）。第一次用、或使用者換一本新試算表時才會真的動到。
+async function ensureDataSheetTabs(env) {
+  if (!dataSheetId(env)) throw new Error('未設定 DATA_SHEET_ID');
+  if (_dataSheetMeta) return _dataSheetMeta;
+  const meta = await sheetsFetch(env, '?fields=sheets.properties(sheetId,title)');
+  const byTitle = {};
+  for (const s of (meta.sheets || [])) byTitle[s.properties.title] = s.properties.sheetId;
+
+  const missing = Object.values(DATA_SHEET_TABS).filter(t => byTitle[t.title] == null);
+  if (missing.length) {
+    const r = await sheetsFetch(env, ':batchUpdate', {
+      method: 'POST',
+      body: JSON.stringify({ requests: missing.map(t => ({ addSheet: { properties: { title: t.title } } })) }),
+    });
+    for (const rep of (r.replies || [])) {
+      if (rep.addSheet) byTitle[rep.addSheet.properties.title] = rep.addSheet.properties.sheetId;
+    }
+    await sheetsFetch(env, '/values:batchUpdate', {
+      method: 'POST',
+      body: JSON.stringify({
+        valueInputOption: 'RAW',
+        data: missing.map(t => ({ range: `'${t.title}'!A1`, values: [t.header] })),
+      }),
+    });
+    console.log(`[datasheet] 建立工作表：${missing.map(t => t.title).join('、')}`);
+  }
+  _dataSheetMeta = byTitle;
+  return byTitle;
+}
+
+// 回傳去掉標題列的資料列；index + 2 = 試算表的列號
+async function readDataTab(env, key, fresh) {
+  const title = DATA_SHEET_TABS[key].title;
+  const c = _dataTabCache[title];
+  if (!fresh && c && Date.now() - c.time < DATA_CACHE_TTL_MS) return c.rows;
+  await ensureDataSheetTabs(env);
+  const data = await sheetsFetch(env, `/values/${tabRange(title, 'A:G')}`);
+  const rows = (data.values || []).slice(1);
+  _dataTabCache[title] = { rows, time: Date.now() };
+  return rows;
+}
+
+async function appendDataRows(env, key, values) {
+  const title = DATA_SHEET_TABS[key].title;
+  await sheetsFetch(env, `/values/${tabRange(title, 'A:G')}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+                    { method: 'POST', body: JSON.stringify({ values }) });
+  delete _dataTabCache[title];
+}
+
+// 由下往上刪，前面的列號才不會因為刪掉後面的而位移
+async function deleteDataRows(env, key, rowNos) {
+  const title = DATA_SHEET_TABS[key].title;
+  const sheetId = (await ensureDataSheetTabs(env))[title];
+  const requests = [...rowNos].sort((a, b) => b - a).map(r => ({
+    deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: r - 1, endIndex: r } },
+  }));
+  await sheetsFetch(env, ':batchUpdate', { method: 'POST', body: JSON.stringify({ requests }) });
+  delete _dataTabCache[title];
+}
+
+// 安排表：同一天已有列就只更新系統欄（C/D/F/G），沒有就新增一列。E「人工修正」永遠不碰。
+async function writeScheduleToSheet(env, entries, fileName) {
+  const title = DATA_SHEET_TABS.schedule.title;
+  const rows = await readDataTab(env, 'schedule', true);
+  const rowByDate = {};
+  rows.forEach((r, i) => { const d = cellText(r, 0); if (d && rowByDate[d] == null) rowByDate[d] = i + 2; });
+
+  const now = taipeiNowLabel();
+  const updates = [], appends = [];
+  for (const e of entries) {
+    const rowNo = rowByDate[e.date];
+    if (rowNo) {
+      updates.push({ range: `'${title}'!C${rowNo}:D${rowNo}`, values: [[e.text, e.lead]] });
+      updates.push({ range: `'${title}'!F${rowNo}:G${rowNo}`, values: [[fileName, now]] });
+    } else {
+      appends.push([e.date, '三', e.text, e.lead, '', fileName, now]);
+    }
+  }
+  if (updates.length) {
+    await sheetsFetch(env, '/values:batchUpdate', {
+      method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data: updates }),
+    });
+    delete _dataTabCache[title];
+  }
+  if (appends.length) await appendDataRows(env, 'schedule', appends);
+  return { updated: updates.length / 2, appended: appends.length };
+}
+
+async function scheduleMonthPresent(env, ym) {
+  if (dataSheetId(env)) {
+    try {
+      return (await readDataTab(env, 'schedule')).some(r => cellText(r, 0).startsWith(ym));
+    } catch (e) { /* 退回 KV */ }
+  }
+  try { return !!(await env.PROCESS_QUEUE.get(`${SCHEDULE_KV_PREFIX}${ym}`)); } catch (e) { return false; }
+}
+
+// --- 問題討論 ---
+//
+// 兩位作者的格式已經不同（「五、問題討論」配 1. 2. 3.；「肆、查經討論問題與參考答案」配 Q1. 加參考答案），
+// 主領多是長輩，不能要求他們照格式寫。所以只靠三件穩定的事：
+//   ① 文件後半有一個含「問題討論」字樣的短標題  ② 題目有編號（或至少一行一題、問號結尾）
+//   ③ 「參考答案：」開頭的段落不是題目
+const Q_SECTION = /(問題討論|討論問題|討論題綱|討論題目)/;
+const Q_HEADING = /^(?:[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+[、.．]|#+\s|第[一二三四五六七八九十\d]+[部分章節段])/;
+const Q_NUM = /^(?:Q\s*\d{1,2}\s*[\.、．:：)）]?|\d{1,2}\s*[\.、．:：)）]|[（(]\s*\d{1,2}\s*[)）]|第\s*[一二三四五六七八九十\d]+\s*題\s*[\.、．:：]?|[一二三四五六七八九十]{1,3}[、.．])\s*(.+)$/;
+const Q_ANSWER = /^(參考答案|參考回答|參考經文|答案|答|提示|解答)\s*[:：]/;
+const Q_MAX = 15;
+
+function extractDiscussionQuestions(text) {
+  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const n = lines.length;
+  let start = -1;
+  // 由後往前找最後一個短標題；內文提到「問題討論」的句子都比 30 字長，不會被當成標題
+  for (let i = n - 1; i >= 0; i--) {
+    if (lines[i].length <= 30 && Q_SECTION.test(lines[i])) { start = i; break; }
+  }
+  if (start < 0) return { heading: null, questions: [] };
+
+  const qs = [];
+  let inAnswer = false;
+  let numbered = null;   // null=還不知道、true=有編號、false=一行一題
+  for (let i = start + 1; i < n; i++) {
+    const t = lines[i];
+    if (Q_ANSWER.test(t)) { inAnswer = true; continue; }
+    const endsQ = /[？?]$/.test(t);
+    const isHeading = Q_HEADING.test(t) && t.length <= 30 && !endsQ;
+    // 「結語」「禱告」這種沒標點的短字串也是下一段的標題
+    const isLabel = t.length <= 8 && !/[？?。！!，,、；;：:]/.test(t) && !Q_NUM.test(t);
+    if (isHeading || (qs.length && isLabel)) break;
+    const m = t.match(Q_NUM);
+    if (m) {
+      inAnswer = false;
+      if (numbered === null) numbered = true;
+      qs.push(m[1].trim());
+      continue;
+    }
+    if (inAnswer) continue;
+    if (numbered !== true && endsQ) {   // 沒編號的題目：一行一題
+      numbered = false;
+      qs.push(t);
+      continue;
+    }
+    // 有編號的題目被拆成多段時接回上一題；一行一題的格式不接
+    if (numbered === true && qs.length && t.length < 120 && !Q_SECTION.test(t)) qs[qs.length - 1] += ' ' + t;
+  }
+  return { heading: lines[start], questions: qs.slice(0, Q_MAX).map(q => q.slice(0, 300)) };
+}
+
+function addDaysISO(dateStr, days) {
+  return new Date(Date.parse(`${dateStr}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+}
+
+// 討論日期 = 文件日期 + 7：主領當晚上傳的文件，是下一週要討論的（§3.6）
+async function saveDiscussionQuestions(env, opts) {
+  if (!dataSheetId(env)) return { ok: false, error: '未設定 DATA_SHEET_ID' };
+  const { heading, questions } = extractDiscussionQuestions(opts.text);
+  const discussDate = addDaysISO(opts.docDate, 7);
+  if (opts.dry) return { ok: true, dry: true, heading, discussDate, count: questions.length, questions };
+  if (!questions.length) return { ok: false, heading, count: 0, error: '找不到問題討論' };
+
+  const rows = await readDataTab(env, 'questions', true);
+  const existing = [];
+  rows.forEach((r, i) => { if (cellText(r, 5) === opts.notionId) existing.push(i + 2); });
+  if (existing.length && !opts.force) return { ok: true, skipped: true, heading, count: existing.length };
+  if (existing.length) await deleteDataRows(env, 'questions', existing);
+
+  const now = taipeiNowLabel();
+  await appendDataRows(env, 'questions',
+    questions.map((q, i) => [discussDate, opts.docDate, opts.topic || '', i + 1, q, opts.notionId, now]));
+  return { ok: true, heading, discussDate, count: questions.length, questions };
+}
+
+// 某個週三要討論的題目（人工加的列沒題號就排在後面）
+async function getDiscussionQuestions(env, dateStr) {
+  if (!dataSheetId(env)) return [];
+  try {
+    const rows = await readDataTab(env, 'questions');
+    return rows
+      .map((r, i) => ({ date: cellText(r, 0), no: parseInt(cellText(r, 3), 10) || 1000 + i, text: cellText(r, 4) }))
+      .filter(q => q.date === dateStr && q.text)
+      .sort((a, b) => a.no - b.no);
+  } catch (e) {
+    console.warn('[questions] 試算表讀取失敗:', e.message);
+    return [];
+  }
+}
+
+// 補抽已經在 Notion 的預查（新轉的會在轉檔時自動抽）。
+// id=<Notion 頁面 ID> 或 month=YYYY-MM；dry=1 只看結果不寫；force=1 刪掉舊列重抽
+async function handleExtractQuestions(env, params) {
+  const dry = params.get('dry') === '1';
+  const force = params.get('force') === '1';
+  let ids = [];
+  if (params.get('id')) {
+    ids = [params.get('id')];
+  } else if (/^\d{4}-\d{2}$/.test(params.get('month') || '')) {
+    const ym = params.get('month');
+    const r = await notionFetch(env, `/databases/${env.NOTION_DATABASE_ID}/query`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: { and: [
+          { property: '聚會類型', select: { equals: '週三晚間' } },
+          { property: '預查資料連結', url: { is_not_empty: true } },
+          { property: '聚會日期', date: { on_or_after: `${ym}-01` } },
+          { property: '聚會日期', date: { before: addDaysISO(`${ym}-01`, 32).slice(0, 7) + '-01' } },
+        ] },
+        sorts: [{ property: '聚會日期', direction: 'ascending' }],
+        page_size: 20,
+      }),
+    });
+    ids = (r.results || []).map(p => p.id);
+  } else {
+    return { error: 'id 或 month=YYYY-MM 必填' };
+  }
+
+  const out = [];
+  for (const id of ids) {
+    try {
+      const m = await getMeeting(env, id);
+      const docDate = (m.date || '').slice(0, 10);
+      const r = await saveDiscussionQuestions(env, { notionId: id, docDate, topic: m.topic, text: m.body || '', dry, force });
+      out.push(Object.assign({ id, docDate, topic: m.topic, speaker: m.speaker }, r));
+    } catch (e) {
+      out.push({ id, ok: false, error: e.message });
+    }
+  }
+  return { count: out.length, results: out };
 }

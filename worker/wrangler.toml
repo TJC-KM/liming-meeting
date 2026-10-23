@@ -19,7 +19,15 @@ workers_dev = true
 [vars]
 # 用寫死版本名稱避免 "*-latest" alias 偶爾指到區域沒部署的版本造成 503
 GEMINI_MODEL = "gemini-2.5-flash"
-CONFIG_SHEET_ID = "1F7fP03oexK4lrerV-hRHM1ooKirwZnuguCerGK6jogo"
+# 設定與資料都在試算表「查經聚會轉檔紀錄」（使用者自己的那本，2026-10-23 起）：
+#   Config 分頁 → 設定（Worker 讀 Config!A:B）
+#   安排表／問題討論分頁 → 系統寫、人可以改的資料
+# 兩個 ID 分開寫是為了之後想拆開時不用改程式；服務帳號要有編輯權，缺的工作表程式會自己建
+CONFIG_SHEET_ID = "1EPWYm4HJHaWy0zNR7-HgYDf9MbPGd1LFAPlbMnU9IUk"
+DATA_SHEET_ID = "1EPWYm4HJHaWy0zNR7-HgYDf9MbPGd1LFAPlbMnU9IUk"
+# 主表目前只有查經相關的 STUDY_*；講員清單、略過關鍵字、Gemini prompt 還在 LINE 小幫手那本
+# 「Line發送功能(小幫手)」的 Config 分頁，主表沒有的 key 會來這裡補讀。全部搬過去後把這行刪掉即可。
+CONFIG_FALLBACK_SHEET_ID = "1F7fP03oexK4lrerV-hRHM1ooKirwZnuguCerGK6jogo"
 # Free tier 限 50 subrequest/invocation：每檔處理用 ~25 個 subrequest + cron 預載 ~8 個 ≈ 33
 # 第 2 個檔就會爆「Too many subrequests」→ 一次 cron 只跑 1 個檔
 QUOTA_PER_RUN = "1"
