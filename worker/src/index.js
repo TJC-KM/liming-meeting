@@ -4182,31 +4182,39 @@ async function scheduleMonthPresent(env, ym) {
 
 // --- 問題討論 ---
 //
-// 兩位作者的格式已經不同（「五、問題討論」配 1. 2. 3.；「肆、查經討論問題與參考答案」配 Q1. 加參考答案），
-// 主領多是長輩，不能要求他們照格式寫。所以只靠三件穩定的事：
-//   ① 文件後半有一個含「問題討論」字樣的短標題  ② 題目有編號（或至少一行一題、問號結尾）
-//   ③ 「參考答案：」開頭的段落不是題目
-const Q_SECTION = /(問題討論|討論問題|討論題綱|討論題目)/;
+// 範本給了，但長輩編出來的文件還是各寫各的（2026-10 實測五位作者五種寫法：「五、問題討論」
+// 「三、建議討論方向」「【Q&A】」「『查經討論與信仰反思』」「十一、生活與工作討論題」…）。
+// 所以分三層，越後面越貴：
+//   ① 規則：由後往前，每個像標題的短行都試，直到底下抓得到「看起來像問題」的一段
+//   ② 規則全落空才請 Gemini 判讀（extractQuestionsWithGemini），而且只收原文裡找得到的句子
+//   ③ 人到試算表改
+// 由後往前、逐個試，是因為同一篇常有好幾段（黃以諾執事 6/17：「五、討論問題」是問答，
+// 最後的「建議討論方向：」才是題目），而內文裡含「討論」「反思」的短句抓不到問題會自動跳過。
+const Q_SECTION = /(討論|Q\s*&\s*A|反思|思考題|思考問題|提問)/i;
 const Q_HEADING = /^(?:[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+[、.．]|#+\s|第[一二三四五六七八九十\d]+[部分章節段])/;
-const Q_NUM = /^(?:Q\s*\d{1,2}\s*[\.、．:：)）]?|\d{1,2}\s*[\.、．:：)）]|[（(]\s*\d{1,2}\s*[)）]|第\s*[一二三四五六七八九十\d]+\s*題\s*[\.、．:：]?|[一二三四五六七八九十]{1,3}[、.．])\s*(.+)$/;
-const Q_ANSWER = /^(參考答案|參考回答|參考經文|答案|答|提示|解答)\s*[:：]/;
+const Q_NUM = /^(?:Q\s*\d{1,2}\s*[\.、．:：)）]?|問題\s*\d{1,2}\s*[\.、．:：)）]?|問\s*[:：]|\d{1,2}\s*[\.、．:：)）]|[（(]\s*\d{1,2}\s*[)）]|[（(]\s*[一二三四五六七八九十]{1,3}\s*[)）]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]|第\s*[一二三四五六七八九十\d]+\s*題\s*[\.、．:：]?|[一二三四五六七八九十]{1,3}[、.．])\s*(.+)$/;
+const Q_ANSWER = /^(參考答案|參考回答|參考經文|答案|答|提示|解答|A\s*\d{0,2})\s*[:：]/i;
+const Q_WORDS = /[？?]|什麼|什麽|甚麼|如何|為何|為什麼|為什麽|是否|嗎|呢|怎樣|怎麼|哪些|哪一|何種|有何/;
 const Q_MAX = 15;
 
-function extractDiscussionQuestions(text) {
-  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
-  const n = lines.length;
-  let start = -1;
-  // 由後往前找最後一個短標題；內文提到「問題討論」的句子都比 30 字長，不會被當成標題
-  for (let i = n - 1; i >= 0; i--) {
-    if (lines[i].length <= 30 && Q_SECTION.test(lines[i])) { start = i; break; }
-  }
-  if (start < 0) return { heading: null, questions: [] };
+// 換行斷句的文件（多半是 PDF 或從 PDF 貼過來的）在中文字中間會留下空白：「焦慮自   卑」「成 就」。
+// 但「信靠 神」「當 神 賜下」是刻意在神、主前後空一格（挪抬），那種不動。
+const Q_NO_JOIN = /[神主祂耶基聖]/;
+function tidyQuestion(q) {
+  return q
+    .replace(/^[0-9]{1,2}(?:\s*[\.、．:：)）]\s*|(?=[\u4e00-\u9fff「『]))/, '')   // 「1. １.」雙重題號剩下的那個
+    .replace(/([\u4e00-\u9fff，、。？！：；「」（）])\s{2,}(?=[\u4e00-\u9fff，、。？！：；「」（）])/g, '$1')
+    .replace(/([\u4e00-\u9fff])\s(?=([\u4e00-\u9fff]))/g, (all, a, b) => (Q_NO_JOIN.test(a) || Q_NO_JOIN.test(b)) ? all : a)
+    .trim().slice(0, 300);
+}
 
+// 從標題的下一行開始收題目，遇到下一段的標題就停
+function collectQuestionsAfter(lines, start) {
   const qs = [];
   let inAnswer = false;
   let numbered = null;   // null=還不知道、true=有編號、false=一行一題
-  for (let i = start + 1; i < n; i++) {
-    const t = lines[i];
+  for (let i = start + 1; i < lines.length; i++) {
+    const t = lines[i].replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xFEE0));
     if (Q_ANSWER.test(t)) { inAnswer = true; continue; }
     const endsQ = /[？?]$/.test(t);
     const isHeading = Q_HEADING.test(t) && t.length <= 30 && !endsQ;
@@ -4215,6 +4223,8 @@ function extractDiscussionQuestions(text) {
     if (isHeading || (qs.length && isLabel)) break;
     const m = t.match(Q_NUM);
     if (m) {
+      // 「3. 結論」這種短又不是問句的，是下一段的標題
+      if (qs.length && m[1].length <= 8 && !Q_WORDS.test(m[1])) break;
       inAnswer = false;
       if (numbered === null) numbered = true;
       qs.push(m[1].trim());
@@ -4227,9 +4237,63 @@ function extractDiscussionQuestions(text) {
       continue;
     }
     // 有編號的題目被拆成多段時接回上一題；一行一題的格式不接
-    if (numbered === true && qs.length && t.length < 120 && !Q_SECTION.test(t)) qs[qs.length - 1] += ' ' + t;
+    const looksLikeSection = t.length <= 30 && Q_SECTION.test(t) && !/[。！!，,？?]$/.test(t);
+    if (numbered === true && qs.length && t.length < 120 && !looksLikeSection) qs[qs.length - 1] += ' ' + t;
   }
-  return { heading: lines[start], questions: qs.slice(0, Q_MAX).map(q => q.slice(0, 300)) };
+  return qs;
+}
+
+// 至少一半像問句才算數 —— 擋掉「三、反思」底下其實是條列心得的情況
+function looksLikeQuestions(qs) {
+  return qs.length > 0 && qs.filter(q => Q_WORDS.test(q)).length * 2 >= qs.length;
+}
+
+function extractDiscussionQuestions(text) {
+  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const h = lines[i];
+    if (h.length > 30 || !Q_SECTION.test(h)) continue;
+    // 句號、逗號結尾的是內文（「…的經驗？ 試討論之。」）；問號結尾要有段落編號才算標題
+    if (/[。！!，,]$/.test(h) || (/[？?]$/.test(h) && !Q_HEADING.test(h))) continue;
+    const qs = collectQuestionsAfter(lines, i);
+    if (looksLikeQuestions(qs)) return { heading: h, questions: qs.slice(0, Q_MAX).map(tidyQuestion) };
+  }
+  return { heading: null, questions: [] };
+}
+
+// 規則抓不到時請 Gemini 找。長輩編出來的文件格式控制不了（2026-10-23 使用者），
+// 但 AI 只能從原文挑：回來的每一題都要在原文裡找得到（去掉空白、全半形標點統一後整句比對），
+// 對不上的就丟掉 —— 寧可少一題，也不要把 AI 自己編的題目當成主領寫的放上邀請頁。
+const Q_GEMINI_PROMPT = `以下是一份教會查經預查文件的純文字。請找出文件裡「給大家討論或思考的問題」。
+這段可能叫問題討論、討論題目、建議討論方向、Q&A、思考問題、分享題、反思、小組討論，也可能沒有標題。
+
+規則：
+- 文件有專門列題目的段落時，只回傳那一段；沒有專門段落，才從全文挑出明確要大家討論的問題
+- 每一題都要逐字照抄文件原文，不可改寫、不可合併、不可自己出題
+- 不要包含題號、參考答案、說明或引導文字
+- 文件裡沒有討論題目就回傳空陣列，不要硬湊
+
+只輸出 JSON，不要其他文字：{"questions": ["第一題原文", "第二題原文"]}`;
+
+function normalizeForMatch(s) {
+  return String(s || '').replace(/\s+/g, '')
+    .replace(/[？]/g, '?').replace(/[！]/g, '!').replace(/[：]/g, ':').replace(/[，]/g, ',')
+    .replace(/[（]/g, '(').replace(/[）]/g, ')').replace(/[；]/g, ';');
+}
+
+async function extractQuestionsWithGemini(env, text) {
+  const src = String(text || '');
+  if (src.trim().length < 50) return { questions: [], dropped: 0 };
+  const raw = await geminiAnalyzeText(env, Q_GEMINI_PROMPT, src.slice(0, 40000));
+  const m = raw.replace(/```(?:json)?/g, '').match(/\{[\s\S]*\}/);
+  let list = [];
+  try { list = (JSON.parse(m ? m[0] : raw).questions || []).map(q => String(q).trim()).filter(Boolean); }
+  catch (e) { throw new Error('Gemini 回傳的不是 JSON：' + raw.slice(0, 120)); }
+
+  const hay = normalizeForMatch(src);
+  const kept = list.map(q => q.replace(Q_NUM, '$1').trim()).filter(q => hay.includes(normalizeForMatch(q)));
+  if (kept.length < list.length) console.warn(`[questions] Gemini 有 ${list.length - kept.length} 題在原文找不到，已丟棄`);
+  return { questions: kept.slice(0, Q_MAX).map(tidyQuestion), dropped: list.length - kept.length };
 }
 
 function addDaysISO(dateStr, days) {
@@ -4239,10 +4303,19 @@ function addDaysISO(dateStr, days) {
 // 討論日期 = 文件日期 + 7：主領當晚上傳的文件，是下一週要討論的（§3.6）
 async function saveDiscussionQuestions(env, opts) {
   if (!dataSheetId(env)) return { ok: false, error: '未設定 DATA_SHEET_ID' };
-  const { heading, questions } = extractDiscussionQuestions(opts.text);
+  let { heading, questions } = extractDiscussionQuestions(opts.text);
+  let via = 'rule', dropped = 0;
+  if (!questions.length) {
+    try {
+      ({ questions, dropped } = await extractQuestionsWithGemini(env, opts.text));
+      via = 'gemini';
+    } catch (e) {
+      console.warn('[questions] Gemini 判讀失敗:', e.message);
+    }
+  }
   const discussDate = addDaysISO(opts.docDate, 7);
-  if (opts.dry) return { ok: true, dry: true, heading, discussDate, count: questions.length, questions };
-  if (!questions.length) return { ok: false, heading, count: 0, error: '找不到問題討論' };
+  if (opts.dry) return { ok: true, dry: true, via, heading, discussDate, count: questions.length, dropped, questions };
+  if (!questions.length) return { ok: false, via, heading, count: 0, error: '找不到問題討論' };
 
   const rows = await readDataTab(env, 'questions', true);
   const existing = [];
@@ -4250,10 +4323,11 @@ async function saveDiscussionQuestions(env, opts) {
   if (existing.length && !opts.force) return { ok: true, skipped: true, heading, count: existing.length };
   if (existing.length) await deleteDataRows(env, 'questions', existing);
 
-  const now = taipeiNowLabel();
+  // AI 判讀的在抽取時間後面註明，看試算表的人知道哪幾篇值得對一下原文
+  const now = taipeiNowLabel() + (via === 'gemini' ? '（AI 判讀）' : '');
   await appendDataRows(env, 'questions',
     questions.map((q, i) => [discussDate, opts.docDate, opts.topic || '', i + 1, q, opts.notionId, now]));
-  return { ok: true, heading, discussDate, count: questions.length, questions };
+  return { ok: true, via, heading, discussDate, count: questions.length, dropped, questions };
 }
 
 // 某個週三要討論的題目（人工加的列沒題號就排在後面）
