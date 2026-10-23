@@ -3764,7 +3764,12 @@ async function renderInvitePage(env, url, rawDate) {
     if (sched) {
       // 安排表那格是人手打的自由文字（「團契查經，帶領：…，進度：…。預查：…。」），
       // 格式每月可能不同 —— 整段原文照搬，不解析（2026-10-22 使用者要求）。
-      body += `<p class="progress">${escapeHtml(sched.text)}</p>` +
+      // 一句一行：「進度：得四1～23。」「預查：撒上一1～28。」分開比較好讀；
+      // 有幾個月是用逗號接預查（「士十四1～20， 預查：…」），一樣在預查前換行
+      const progressHtml = escapeHtml(sched.text)
+        .replace(/。\s*(?=\S)/g, '。<br>')
+        .replace(/([，,])\s*(?=預查[:：])/g, '$1<br>');
+      body += `<p class="progress">${progressHtml}</p>` +
               (sched.lead ? `<p class="speaker">領會：${escapeHtml(sched.lead)}</p>` : '');
     } else if (last) {
       // 安排表還沒匯入（或那個月沒有檔）時的退路：用上週預告文件的主題。
@@ -3774,7 +3779,7 @@ async function renderInvitePage(env, url, rawDate) {
     // 題目來自試算表「問題討論」（轉檔時從上週文件抽出，人可以改），放在文件前面：
     // 來的人要先看的是題目，文件是給想深入的人往下捲
     if (questions.length) {
-      body += '<p class="doclabel">💬 預查提供的問題討論（僅參考，以當日帶領人員分享為主）</p><ol class="qlist">' +
+      body += '<p class="doclabel">💬 預查提供的問題討論<br>（僅參考，以當日帶領人員分享為主）</p><ol class="qlist">' +
               questions.map(q => `<li>${escapeHtml(q.text)}</li>`).join('') + '</ol>';
     }
     // 文件可能還沒上傳（或還沒轉），這時只有安排表那段文字，照樣有用
