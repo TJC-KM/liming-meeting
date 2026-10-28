@@ -47,6 +47,7 @@ export default {
     ctx.waitUntil(runDailyProcess(env, {
       allowRetry: RETRY_CRONS.includes(event.cron),
       studyFirst: STUDY_CRONS.includes(event.cron),
+      studyCatchup: STUDY_CATCHUP_CRONS.includes(event.cron),
     }));
   },
 
@@ -2961,11 +2962,20 @@ const RETRY_CRONS = ['30 22 * * *', '0 8 * * *'];   // 台北 06:30、16:00
 // 這一輪剛好在那之後，當晚就能上網站。改 wrangler.toml 的 crons 時這裡要一起改。
 const STUDY_CRONS = ['30 13 * * *'];   // 台北 21:30
 
+// 06:30 那輪也先補轉「剛上傳、21:30 沒趕上」的預查（2026-10-29 使用者要求）：
+// 主領晚於 21:30 才上傳時，邀請頁的題目與文件不用等到隔天晚上。
+// 只看 36 小時內上傳的 —— 預查失敗不留紀錄，轉不過的檔會每輪重來，
+// 照 14 天的話 06:30 的錄音重試會被卡兩週；36 小時最多卡兩個早上。
+const STUDY_CATCHUP_CRONS = ['30 22 * * *'];   // 台北 06:30
+const STUDY_CATCHUP_MAX_AGE_HOURS = 36;
+
 // opts.allowRetry：這輪可不可以做重試（cron 依時段決定；/admin/run-daily 預設可以）
 // opts.studyFirst：這輪要不要在重試／新錄音之前先處理預查
+// opts.studyCatchup：同上，但只補 STUDY_CATCHUP_MAX_AGE_HOURS 內剛上傳的
 async function runDailyProcess(env, opts) {
   const allowRetry = !opts || opts.allowRetry !== false;
   const studyFirst = !!(opts && opts.studyFirst);
+  const studyCatchup = !!(opts && opts.studyCatchup);
   const QUOTA = parseInt(env.QUOTA_PER_RUN || '5', 10);
   console.log(`[daily] start at ${new Date().toISOString()}, quota=${QUOTA}, allowRetry=${allowRetry}, studyFirst=${studyFirst}`);
 
@@ -3022,9 +3032,9 @@ async function runDailyProcess(env, opts) {
 
   // ⭐ 預查優先（只在 STUDY_CRONS 時段）。預查約 30 個 subrequest，跟錄音相加會撞破
   //    free tier 的 50，所以有做預查就結束本輪（錄音讓給其他三輪）。
-  if (studyFirst && processed === 0) {
+  if ((studyFirst || studyCatchup) && processed === 0) {
     try {
-      const sr = await processOneNewStudyDoc(env);
+      const sr = await processOneNewStudyDoc(env, studyFirst ? null : STUDY_CATCHUP_MAX_AGE_HOURS);
       if (sr) {
         results.push(sr);
         console.log('[daily] 本輪用於預查，跳過重試與新錄音');
@@ -3155,14 +3165,14 @@ const STUDY_AUTO_MAX_AGE_DAYS = 14;
 const STUDY_AUTO_MAX_CHECKS = 3;   // 最多查幾份的 dedup，控制 subrequest
 const STUDY_BULK_MOVE_MIN = 5;     // 同一天上傳幾份以上視為整批搬檔
 
-async function processOneNewStudyDoc(env) {
+async function processOneNewStudyDoc(env, maxAgeHours) {
   const docs = await listStudyDocs(env);
-  const cutoff = Date.now() - STUDY_AUTO_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - (maxAgeHours ? maxAgeHours * 60 * 60 * 1000 : STUDY_AUTO_MAX_AGE_DAYS * 24 * 60 * 60 * 1000);
   const fresh = docs
     .filter(d => d.createdTime && Date.parse(d.createdTime) >= cutoff)
     .sort((a, b) => Date.parse(b.createdTime) - Date.parse(a.createdTime));
 
-  console.log(`[daily] [study] 共 ${docs.length} 份，${STUDY_AUTO_MAX_AGE_DAYS} 天內新上傳 ${fresh.length} 份`);
+  console.log(`[daily] [study] 共 ${docs.length} 份，${maxAgeHours ? `${maxAgeHours} 小時` : `${STUDY_AUTO_MAX_AGE_DAYS} 天`}內新上傳 ${fresh.length} 份`);
   if (!fresh.length) return null;
 
   // 上傳日（台北）各有幾份，用來判斷是不是整批搬檔
