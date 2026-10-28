@@ -3699,6 +3699,8 @@ async function findLatestStudyBefore(env, dateStr) {
 const INVITE_CSS = `*{box-sizing:border-box}body{margin:0;background:#f4f1ea;color:#2c2c2a;
 font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;line-height:1.7}
 main{max-width:520px;margin:0 auto;padding:32px 20px 48px}
+.card+.card{margin-top:16px}
+.doc .doclabel:first-child{margin-top:0}
 h1{font-size:30px;margin:0 0 6px;font-weight:700}
 .when{font-size:20px;color:#5f5e5a;margin:0 0 28px}
 .join{display:block;background:#1d7a52;color:#fff;text-decoration:none;text-align:center;
@@ -3724,7 +3726,15 @@ background:#fff;display:block}
 .mini{display:inline-block;border:1px solid #1d7a52;border-radius:999px;padding:8px 16px;margin:4px;
 color:#1d7a52;font-size:16px;font-weight:700;text-decoration:none;background:#fff}
 .mini:active{background:#eef6f1}
-.warn{background:#fdf0e3;border-radius:14px;padding:18px;font-size:17px;margin-bottom:28px}`;
+.warn{background:#fdf0e3;border-radius:14px;padding:18px;font-size:17px;margin-bottom:28px}
+@media (min-width:700px){main{max-width:720px;padding:40px 32px 56px}.docframe{height:70vh}}
+@media (min-width:1024px){
+main.two{max-width:1280px;display:grid;grid-template-columns:minmax(360px,440px) minmax(0,1fr);
+grid-template-rows:auto auto auto 1fr;grid-template-areas:"head doc" "info doc" "foot doc" "tools doc";
+column-gap:32px;align-items:start}
+main.two .head{grid-area:head}main.two .info{grid-area:info}main.two .foot{grid-area:foot}main.two .tools{grid-area:tools}
+main.two .doc{grid-area:doc;margin-top:0;position:sticky;top:24px}
+main.two .docframe{height:calc(100vh - 240px);min-height:420px}}`;
 
 // rawDate = null → 固定網址：日期自動算成接下來的那個週三，卡片用不會過時的文案
 async function renderInvitePage(env, url, rawDate) {
@@ -3751,16 +3761,21 @@ async function renderInvitePage(env, url, rawDate) {
   const ogTitle = evergreen ? cfg.title : `${cfg.title}．${formatDateLabel(dateStr)}${timeLabel}`;
   const ogDesc = cfg.ogDesc.replace(/\{time\}/g, timeLabel).replace(/\{title\}/g, cfg.title);
 
-  let body = '<main>';
-  body += `<h1>${escapeHtml(cfg.title)}</h1>`;
-  body += `<p class="when">${escapeHtml(formatDateLabel(dateStr) + timeLabel)}</p>`;
+  // 版面：手機一欄，依序是標題 → 本週進度 → 上週預查文件 → 頁尾。
+  // 寬螢幕（平板橫拿、電腦）有文件時分左右兩欄：左邊進度與題目，右邊文件固定在畫面上，
+  // 一邊看題目一邊對照文件（2026-10-29 使用者：也有平板、電腦的使用者）。
+  let head = `<div class="head"><h1>${escapeHtml(cfg.title)}</h1>` +
+             `<p class="when">${escapeHtml(formatDateLabel(dateStr) + timeLabel)}</p>`;
   if (cfg.meetUrl) {
-    body += `<a class="join" href="${escapeHtml(cfg.meetUrl)}">📹 加入 Google Meet</a>`;
+    head += `<a class="join" href="${escapeHtml(cfg.meetUrl)}">📹 加入 Google Meet</a>`;
   } else {
-    body += '<div class="warn">還沒設定線上會議連結，請聯絡管理同工。</div>';
+    head += '<div class="warn">還沒設定線上會議連結，請聯絡管理同工。</div>';
   }
+  head += '</div>';
+
+  let info = '';
   if (sched || last || questions.length) {
-    body += '<div class="card"><p class="label">本週進度</p>';
+    info += '<section class="card info"><p class="label">本週進度</p>';
     if (sched) {
       // 安排表那格是人手打的自由文字（「團契查經，帶領：…，進度：…。預查：…。」），
       // 格式每月可能不同 —— 整段原文照搬，不解析（2026-10-22 使用者要求）。
@@ -3769,48 +3784,54 @@ async function renderInvitePage(env, url, rawDate) {
       const progressHtml = escapeHtml(sched.text)
         .replace(/。\s*(?=\S)/g, '。<br>')
         .replace(/([，,])\s*(?=預查[:：])/g, '$1<br>');
-      body += `<p class="progress">${progressHtml}</p>` +
+      info += `<p class="progress">${progressHtml}</p>` +
               (sched.lead ? `<p class="speaker">領會：${escapeHtml(sched.lead)}</p>` : '');
     } else if (last) {
       // 安排表還沒匯入（或那個月沒有檔）時的退路：用上週預告文件的主題。
       // 只放主題不放人名 —— 文件上掛的是上週預告的那位，不是今晚帶分組討論的人。
-      body += `<p class="topic">${escapeHtml(last.topic)}</p>`;
+      info += `<p class="topic">${escapeHtml(last.topic)}</p>`;
     }
     // 題目來自試算表「問題討論」（轉檔時從上週文件抽出，人可以改），放在文件前面：
     // 來的人要先看的是題目，文件是給想深入的人往下捲
     if (questions.length) {
-      body += '<p class="doclabel">💬 預查提供的問題討論<br>（僅參考，以當日帶領人員分享為主）</p><ol class="qlist">' +
+      info += '<p class="doclabel">💬 預查提供的問題討論<br>（僅參考，以當日帶領人員分享為主）</p><ol class="qlist">' +
               questions.map(q => `<li>${escapeHtml(q.text)}</li>`).join('') + '</ol>';
     }
-    // 文件可能還沒上傳（或還沒轉），這時只有安排表那段文字，照樣有用
-    if (last) {
-      // 原始文件：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，不是翻頁式）。
-      // 跟聚會頁的「📄 完整文件」同一招 —— 聚會頁那份是 AI 轉出來的文字，
-      // 原始文件才是撰寫者寫的原貌（圖表、事件地圖等圖片裡的字抽不出來）。
-      const docId = fileIdFromUrl(last.docUrl);
-      if (docId) {
-        // 標「上週」不是「原始」：這份文件是上一次聚會主領預告時上傳的，
-        // 內容正好就是本週要討論的進度。findLatestStudyBefore 的 13 天上限保證
-        // 它一定來自上一次聚會，不會是更早的（§3.6）。
-        body += '<p class="doclabel">📄 上週預查文件</p>' +
-                `<iframe class="docframe" src="https://drive.google.com/file/d/${escapeHtml(docId)}/preview" allow="fullscreen" loading="lazy"></iframe>` +
-                `<a class="more" href="${escapeHtml(last.docUrl)}" target="_blank" rel="noopener">↗ 在新分頁開啟</a>`;
-      }
-      // 不帶 theme：聚會頁自己會記住使用者上次選的字級（ThemeManager 存 localStorage），
-      // 在這裡硬塞 theme=senior 會蓋掉他的選擇。
-      body += `<a class="btn2" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">純文字大字版</a>`;
-    }
-    body += '</div>';
+    info += '</section>';
   }
-  body += `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p>`;
+
+  // 文件可能還沒上傳（或還沒轉），這時只有安排表那段文字，照樣有用
+  let doc = '';
+  if (last) {
+    doc += '<section class="card doc">';
+    // 原始文件：嵌 Drive 的 PDF 預覽（連續直向捲動，所有頁攤開，不是翻頁式）。
+    // 跟聚會頁的「📄 完整文件」同一招 —— 聚會頁那份是 AI 轉出來的文字，
+    // 原始文件才是撰寫者寫的原貌（圖表、事件地圖等圖片裡的字抽不出來）。
+    const docId = fileIdFromUrl(last.docUrl);
+    if (docId) {
+      // 標「上週」不是「原始」：這份文件是上一次聚會主領預告時上傳的，
+      // 內容正好就是本週要討論的進度。findLatestStudyBefore 的 13 天上限保證
+      // 它一定來自上一次聚會，不會是更早的（§3.6）。
+      doc += '<p class="doclabel">📄 上週預查文件</p>' +
+             `<iframe class="docframe" src="https://drive.google.com/file/d/${escapeHtml(docId)}/preview" allow="fullscreen" loading="lazy"></iframe>` +
+             `<a class="more" href="${escapeHtml(last.docUrl)}" target="_blank" rel="noopener">↗ 在新分頁開啟</a>`;
+    }
+    // 不帶 theme：聚會頁自己會記住使用者上次選的字級（ThemeManager 存 localStorage），
+    // 在這裡硬塞 theme=senior 會蓋掉他的選擇。
+    doc += `<a class="btn2" href="${SITE_BASE}/meeting.html?id=${encodeURIComponent(last.id)}">純文字大字版</a>`;
+    doc += '</section>';
+  }
+
+  let tail = `<p class="foot">每週三${escapeHtml(timeLabel)}，歡迎隨時加入</p>`;
   // 跟「本週進度」無關，STUDY_HIDE_LAST 開著時照樣顯示
   if (cfg.templateUrl || cfg.guideUrl) {
-    body += '<div class="tools"><p class="toolslabel">給預查文件撰寫者</p>';
-    if (cfg.templateUrl) body += `<a class="mini" href="${escapeHtml(driveDownloadUrl(cfg.templateUrl))}">📝 下載範本（Word）</a>`;
-    if (cfg.guideUrl) body += `<a class="mini" href="${escapeHtml(cfg.guideUrl)}" target="_blank" rel="noopener">📖 撰寫說明</a>`;
-    body += '</div>';
+    tail += '<div class="tools"><p class="toolslabel">給預查文件撰寫者</p>';
+    if (cfg.templateUrl) tail += `<a class="mini" href="${escapeHtml(driveDownloadUrl(cfg.templateUrl))}">📝 下載範本（Word）</a>`;
+    if (cfg.guideUrl) tail += `<a class="mini" href="${escapeHtml(cfg.guideUrl)}" target="_blank" rel="noopener">📖 撰寫說明</a>`;
+    tail += '</div>';
   }
-  body += '</main>';
+
+  const body = `<main${doc ? ' class="two"' : ''}>${head}${info}${doc}${tail}</main>`;
 
   return {
     status: 200,
@@ -4201,6 +4222,7 @@ const Q_NUM = /^(?:Q\s*\d{1,2}\s*[\.、．:：)）]?|問題\s*\d{1,2}\s*[\.、�
 const Q_ANSWER = /^(參考答案|參考回答|參考經文|答案|答|提示|解答|A\s*\d{0,2})\s*[:：]/i;
 const Q_WORDS = /[？?]|什麼|什麽|甚麼|如何|為何|為什麼|為什麽|是否|嗎|呢|怎樣|怎麼|哪些|哪一|何種|有何/;
 const Q_MAX = 15;
+const Q_GUIDE = /^(請|試|例如|比如|可從|回想|想想|分享|[（(])/;
 
 // 換行斷句的文件（多半是 PDF 或從 PDF 貼過來的）在中文字中間會留下空白：「焦慮自   卑」「成 就」。
 // 但「信靠 神」「當 神 賜下」是刻意在神、主前後空一格（挪抬），那種不動。
@@ -4208,6 +4230,7 @@ const Q_NO_JOIN = /[神主祂耶基聖]/;
 function tidyQuestion(q) {
   return q
     .replace(/^[0-9]{1,2}(?:\s*[\.、．:：)）]\s*|(?=[\u4e00-\u9fff「『]))/, '')   // 「1. １.」雙重題號剩下的那個
+    .replace(/([？?])[^？?]{1,30}[：:]\s*$/, '$1')   // 問號後面帶出答案的引言（「可分為兩方面來教導：」）
     .replace(/([\u4e00-\u9fff，、。？！：；「」（）])\s{2,}(?=[\u4e00-\u9fff，、。？！：；「」（）])/g, '$1')
     .replace(/([\u4e00-\u9fff])\s(?=([\u4e00-\u9fff]))/g, (all, a, b) => (Q_NO_JOIN.test(a) || Q_NO_JOIN.test(b)) ? all : a)
     .trim().slice(0, 300);
@@ -4242,8 +4265,15 @@ function collectQuestionsAfter(lines, start) {
       continue;
     }
     // 有編號的題目被拆成多段時接回上一題；一行一題的格式不接
+    // 題目已經用問號結束時，後面的段落多半是答案（王賽特傳道 10/28 那篇沒寫「參考答案：」）；
+    // 只有接著問、或是「請分享…」「（經文）」這類引導才是題目的一部分（許恩得弟兄的寫法）
     const looksLikeSection = t.length <= 30 && Q_SECTION.test(t) && !/[。！!，,？?]$/.test(t);
-    if (numbered === true && qs.length && t.length < 120 && !looksLikeSection) qs[qs.length - 1] += ' ' + t;
+    // 「獻身是否只指成為傳道人？可分為兩方面來教導：」問號後面用冒號帶出答案，也算題目已結束
+    const prevDone = qs.length && /[？?](?:[^？?]{0,30}[：:])?\s*$/.test(qs[qs.length - 1]);
+    const isPartOfQuestion = /[？?]$/.test(t) || Q_GUIDE.test(t);
+    if (numbered === true && qs.length && t.length < 120 && !looksLikeSection && (!prevDone || isPartOfQuestion)) {
+      qs[qs.length - 1] += ' ' + t;
+    }
   }
   return qs;
 }
