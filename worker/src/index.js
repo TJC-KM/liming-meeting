@@ -3826,7 +3826,7 @@ async function renderInvitePage(env, url, rawDate) {
   // 跟「本週進度」無關，STUDY_HIDE_LAST 開著時照樣顯示
   if (cfg.templateUrl || cfg.guideUrl) {
     tail += '<div class="tools"><p class="toolslabel">給預查文件撰寫者</p>';
-    if (cfg.templateUrl) tail += `<a class="mini" href="${escapeHtml(driveDownloadUrl(cfg.templateUrl))}">📝 下載範本（Word）</a>`;
+    if (cfg.templateUrl) tail += `<a class="mini" href="${escapeHtml(driveDownloadUrl(cfg.templateUrl))}">📝 預查範本</a>`;
     if (cfg.guideUrl) tail += `<a class="mini" href="${escapeHtml(cfg.guideUrl)}" target="_blank" rel="noopener">📖 撰寫說明</a>`;
     tail += '</div>';
   }
@@ -4216,13 +4216,15 @@ async function scheduleMonthPresent(env, ym) {
 //   ③ 人到試算表改
 // 由後往前、逐個試，是因為同一篇常有好幾段（黃以諾執事 6/17：「五、討論問題」是問答，
 // 最後的「建議討論方向：」才是題目），而內文裡含「討論」「反思」的短句抓不到問題會自動跳過。
-const Q_SECTION = /(討論|Q\s*&\s*A|反思|思考題|思考問題|提問)/i;
+// 一篇有好幾段題目時取最後一段（王賽特傳道 10/28：「三、思考問題參考」是附答案的教義問答，
+// 最後的「五、心得分享參考」才是分組討論用的，2026-10-29 使用者決定）
+const Q_SECTION = /(討論|Q\s*&\s*A|反思|思考題|思考問題|提問|分享|心得)/i;
 const Q_HEADING = /^(?:[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+[、.．]|#+\s|第[一二三四五六七八九十\d]+[部分章節段])/;
 const Q_NUM = /^(?:Q\s*\d{1,2}\s*[\.、．:：)）]?|問題\s*\d{1,2}\s*[\.、．:：)）]?|問\s*[:：]|\d{1,2}\s*[\.、．:：)）]|[（(]\s*\d{1,2}\s*[)）]|[（(]\s*[一二三四五六七八九十]{1,3}\s*[)）]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]|第\s*[一二三四五六七八九十\d]+\s*題\s*[\.、．:：]?|[一二三四五六七八九十]{1,3}[、.．])\s*(.+)$/;
 const Q_ANSWER = /^(參考答案|參考回答|參考經文|答案|答|提示|解答|A\s*\d{0,2})\s*[:：]/i;
 const Q_WORDS = /[？?]|什麼|什麽|甚麼|如何|為何|為什麼|為什麽|是否|嗎|呢|怎樣|怎麼|哪些|哪一|何種|有何/;
-const Q_MAX = 15;
-const Q_GUIDE = /^(請|試|例如|比如|可從|回想|想想|分享|[（(])/;
+const Q_MAX = 20;
+const Q_GUIDE = /^(請|試|例如|比如|可從|回想|想想|[（(])/;
 
 // 換行斷句的文件（多半是 PDF 或從 PDF 貼過來的）在中文字中間會留下空白：「焦慮自   卑」「成 就」。
 // 但「信靠 神」「當 神 賜下」是刻意在神、主前後空一格（挪抬），那種不動。
@@ -4251,8 +4253,19 @@ function collectQuestionsAfter(lines, start) {
     if (isHeading || (qs.length && isLabel)) break;
     const m = t.match(Q_NUM);
     if (m) {
-      // 「3. 結論」這種短又不是問句的，是下一段的標題
-      if (qs.length && m[1].length <= 8 && !Q_WORDS.test(m[1])) break;
+      // 短又不是問句的編號行：下一行是問句，就是這一題的小標（「（一）信仰的承接」＋下一行題目）；
+      // 不是的話就是下一段的標題（「3. 結論」）
+      if (m[1].length <= 8 && !Q_WORDS.test(m[1])) {
+        const next = (lines[i + 1] || '').replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xFEE0));
+        if (Q_WORDS.test(next) && !Q_NUM.test(next) && !Q_ANSWER.test(next)) {
+          inAnswer = false;
+          if (numbered === null) numbered = true;
+          qs.push(`${m[1].trim()}：${next.trim()}`);
+          i++;
+          continue;
+        }
+        if (qs.length) break;
+      }
       inAnswer = false;
       if (numbered === null) numbered = true;
       qs.push(m[1].trim());
@@ -4303,7 +4316,7 @@ const Q_GEMINI_PROMPT = `以下是一份教會查經預查文件的純文字。�
 這段可能叫問題討論、討論題目、建議討論方向、Q&A、思考問題、分享題、反思、小組討論，也可能沒有標題。
 
 規則：
-- 文件有專門列題目的段落時，只回傳那一段；沒有專門段落，才從全文挑出明確要大家討論的問題
+- 文件有專門列題目的段落時，只回傳那一段；有好幾段時，回傳文件裡最後的那一段；沒有專門段落，才從全文挑出明確要大家討論的問題
 - 每一題都要逐字照抄文件原文，不可改寫、不可合併、不可自己出題
 - 不要包含題號、參考答案、說明或引導文字
 - 文件裡沒有討論題目就回傳空陣列，不要硬湊
@@ -4316,10 +4329,25 @@ function normalizeForMatch(s) {
     .replace(/[（]/g, '(').replace(/[）]/g, ')').replace(/[；]/g, ';');
 }
 
+// 用輕量模型：額度跟錄音轉檔的 GEMINI_MODEL 分開算，抽題目不會搶到轉錄音的次數。
+// 2026-10 實測 17 篇，找到的段落跟規則一致，一篇約 15 秒（gemini-2.5-flash-lite 已不開放給新使用者）
+const Q_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+
 async function extractQuestionsWithGemini(env, text) {
   const src = String(text || '');
   if (src.trim().length < 50) return { questions: [], dropped: 0 };
-  const raw = await geminiAnalyzeText(env, Q_GEMINI_PROMPT, src.slice(0, 40000));
+  if (!env.GEMINI_API_KEY) throw new Error('未設定 GEMINI_API_KEY');
+  const res = await fetch(`${GEMINI_BASE}/models/${Q_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: Q_GEMINI_PROMPT }, { text: src.slice(0, 40000) }] }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: 'application/json' },
+    }),
+  });
+  const data = await readGeminiJson(res, '抽題');
+  if (!data?.candidates) throw new Error(`Gemini 抽題失敗 (HTTP ${data?.error?.code || res.status}): ${(data?.error?.message || '無回應').slice(0, 200)}`);
+  const raw = (data.candidates[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join('');
   const m = raw.replace(/```(?:json)?/g, '').match(/\{[\s\S]*\}/);
   let list = [];
   try { list = (JSON.parse(m ? m[0] : raw).questions || []).map(q => String(q).trim()).filter(Boolean); }
