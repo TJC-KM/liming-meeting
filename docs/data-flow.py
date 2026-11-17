@@ -5,8 +5,8 @@ import sys
 from xml.sax.saxutils import escape
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data-flow.svg')
-W, H = 1500, 902
-TOP = 142  # 方塊從這裡開始；標題區加減行數時調這個
+W, H = 1500, 922
+TOP = 162  # 方塊從這裡開始；標題區加減行數時調這個
 FONT = "'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif"
 BLUE, GREEN, GOLD, GRAY, DARK = '#7c9cc4', '#7fa87f', '#c9a15c', '#8b93a6', '#4a5164'
 LINE_H, PAD_TOP, PAD_BOT, HEAD = 19, 14, 10, 30
@@ -47,7 +47,9 @@ add('</defs>')
 add(f'<rect x="0" y="0" width="{W}" height="{H}" fill="#fbfbfd" stroke="#d7dae0" rx="8"/>')
 add('<text x="30" y="40" font-size="20" font-weight="700" fill="#1a1d24">聚會紀錄系統 liming-meeting：資料流程</text>')
 add('<text x="30" y="63" font-size="13" fill="#5c6270">兩個畫面：① 聚會紀錄網站（有日期的聚會紀錄）　② 查經邀請頁 study.liming-tjc.org　｜　藍＝聚會紀錄　綠＝查經　金＝AI　灰＝設定／暫存</text>')
-add('<text x="30" y="86" font-size="13" fill="#4a5164"><tspan font-weight="700">怎麼看：</tspan>從右邊的畫面找到區塊 → 看 ← 後面寫的資料 → 往左找是誰寫進去、原本從哪裡來　｜　想知道改一個東西會影響哪裡，就從左邊順著箭頭往右看</text>')
+add('<text x="30" y="86" font-size="13" font-weight="700" fill="#4a5164">怎麼看：</text>')
+add('<text x="86" y="86" font-size="13" fill="#4a5164"><tspan font-weight="700">順著箭頭看</tspan>（左 → 右）：左邊的檔案、設定經過哪些處理，最後出現在哪個畫面</text>')
+add('<text x="86" y="106" font-size="13" fill="#4a5164"><tspan font-weight="700">逆著箭頭看</tspan>（右 → 左）：畫面上某一項是從哪裡來的，不對時要去哪裡改</text>')
 
 # 欄標題
 AX, AW = 30, 260
