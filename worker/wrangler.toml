@@ -17,8 +17,10 @@ routes = [{ pattern = "study.liming-tjc.org", custom_domain = true }]
 workers_dev = true
 
 [vars]
-# 用寫死版本名稱避免 "*-latest" alias 偶爾指到區域沒部署的版本造成 503
-GEMINI_MODEL = "gemini-2.5-flash"
+# 錄音整理用的模型。2026-11-17 使用者在 Cloudflare 後台改成 gemini-flash-latest（Google 收掉舊模型時不用跟著改），
+# 這裡同步 —— 後台改的值在下次 wrangler deploy 會被這裡蓋回去，兩邊要一致。
+# ⚠️ 以前寫死版本是因為 "*-latest" 偶爾指到區域還沒部署的版本，回 503；轉錄音一直失敗時，先改回固定版本（例如 gemini-2.5-flash）
+GEMINI_MODEL = "gemini-flash-latest"
 # 設定與資料都在試算表「查經聚會轉檔紀錄」（使用者自己的那本，2026-10-23 起）：
 #   Config 分頁 → 設定（Worker 讀 Config!A:B）
 #   安排表／問題討論分頁 → 系統寫、人可以改的資料
