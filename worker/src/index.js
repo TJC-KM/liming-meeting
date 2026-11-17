@@ -3728,6 +3728,7 @@ text-align:center;font-size:19px;font-weight:700;padding:16px;border-radius:12px
 .doclabel{font-size:15px;color:#7a7873;margin:18px 0 8px}
 .qlist{margin:0;padding-left:26px;font-size:18px;line-height:1.7}
 .qlist li{margin:0 0 10px}
+.qtopic{font-size:16px;font-weight:700;color:#5f5e5a;margin:12px 0 6px}
 .docframe{width:100%;height:62vh;min-height:360px;border:1px solid #e3e0d7;border-radius:10px;
 background:#fff;display:block}
 .foot{font-size:16px;color:#7a7873;text-align:center;margin:28px 0 0}
@@ -3804,8 +3805,18 @@ async function renderInvitePage(env, url, rawDate) {
     // 題目來自試算表「問題討論」（轉檔時從上週文件抽出，人可以改），放在文件前面：
     // 來的人要先看的是題目，文件是給想深入的人往下捲
     if (questions.length) {
-      info += '<p class="doclabel">💬 預查提供的問題討論<br>（僅參考，以當日帶領人員分享為主）</p><ol class="qlist">' +
-              questions.map(q => `<li>${escapeHtml(q.text)}</li>`).join('') + '</ol>';
+      info += '<p class="doclabel">💬 預查提供的問題討論<br>（僅參考，以當日帶領人員分享為主）</p>';
+      // 來自兩份以上文件時，每組前面標文件主題，才看得出哪幾題是哪一章
+      const groups = [];
+      for (const q of questions) {
+        const last = groups[groups.length - 1];
+        if (last && last.source === q.source) last.items.push(q);
+        else groups.push({ source: q.source, topic: q.topic, items: [q] });
+      }
+      for (const g of groups) {
+        if (groups.length > 1 && g.topic) info += `<p class="qtopic">${escapeHtml(g.topic)}</p>`;
+        info += '<ol class="qlist">' + g.items.map(q => `<li>${escapeHtml(q.text)}</li>`).join('') + '</ol>';
+      }
     }
     info += '</section>';
   }
@@ -4270,7 +4281,8 @@ function collectQuestionsAfter(lines, start) {
         if (Q_WORDS.test(next) && !Q_NUM.test(next) && !Q_ANSWER.test(next)) {
           inAnswer = false;
           if (numbered === null) numbered = true;
-          qs.push(`${m[1].trim()}：${next.trim()}`);
+          const label = m[1].trim().replace(/[：:]$/, '');   // 「1、神的言語稀少：」本身已有冒號
+          qs.push(`${label}：${next.trim()}`);
           i++;
           continue;
         }
@@ -4408,10 +4420,17 @@ async function getDiscussionQuestions(env, dateStr) {
   if (!dataSheetId(env)) return [];
   try {
     const rows = await readDataTab(env, 'questions');
+    // 同一天可能有兩份文件的題目（主領一次傳兩章），按文件分組、組內照題號，不要交錯
+    const groupOrder = {};
     return rows
-      .map((r, i) => ({ date: cellText(r, 0), no: parseInt(cellText(r, 3), 10) || 1000 + i, text: cellText(r, 4) }))
+      .map((r, i) => ({ date: cellText(r, 0), topic: cellText(r, 2), source: cellText(r, 5),
+                        no: parseInt(cellText(r, 3), 10) || 1000 + i, text: cellText(r, 4), row: i }))
       .filter(q => q.date === dateStr && q.text)
-      .sort((a, b) => a.no - b.no);
+      .map(q => {
+        if (groupOrder[q.source] == null) groupOrder[q.source] = q.source ? q.row : 1e6;
+        return q;
+      })
+      .sort((a, b) => (groupOrder[a.source] - groupOrder[b.source]) || (a.no - b.no));
   } catch (e) {
     console.warn('[questions] 試算表讀取失敗:', e.message);
     return [];
