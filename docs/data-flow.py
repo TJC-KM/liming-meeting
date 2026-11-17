@@ -5,7 +5,8 @@ import sys
 from xml.sax.saxutils import escape
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data-flow.svg')
-W, H = 1500, 880
+W, H = 1500, 902
+TOP = 142  # 方塊從這裡開始；標題區加減行數時調這個
 FONT = "'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif"
 BLUE, GREEN, GOLD, GRAY, DARK = '#7c9cc4', '#7fa87f', '#c9a15c', '#8b93a6', '#4a5164'
 LINE_H, PAD_TOP, PAD_BOT, HEAD = 19, 14, 10, 30
@@ -46,6 +47,7 @@ add('</defs>')
 add(f'<rect x="0" y="0" width="{W}" height="{H}" fill="#fbfbfd" stroke="#d7dae0" rx="8"/>')
 add('<text x="30" y="40" font-size="20" font-weight="700" fill="#1a1d24">聚會紀錄系統 liming-meeting：資料流程</text>')
 add('<text x="30" y="63" font-size="13" fill="#5c6270">兩個畫面：① 聚會紀錄網站（有日期的聚會紀錄）　② 查經邀請頁 study.liming-tjc.org　｜　藍＝聚會紀錄　綠＝查經　金＝AI　灰＝設定／暫存</text>')
+add('<text x="30" y="86" font-size="13" fill="#4a5164"><tspan font-weight="700">怎麼看：</tspan>從右邊的畫面找到區塊 → 看 ← 後面寫的資料 → 往左找是誰寫進去、原本從哪裡來　｜　想知道改一個東西會影響哪裡，就從左邊順著箭頭往右看</text>')
 
 # 欄標題
 AX, AW = 30, 260
@@ -53,18 +55,18 @@ BX, BW = 345, 375
 CX, CW = 800, 270
 DX, DW = 1170, 300
 for x, t in [(AX, '來源'), (BX, '處理'), (CX, '資料'), (DX, '畫面（只讀，經由 Worker）')]:
-    add(f'<text x="{x}" y="100" font-size="14" font-weight="700" fill="#1a1d24">{escape(t)}</text>')
+    add(f'<text x="{x}" y="{TOP - 20}" font-size="14" font-weight="700" fill="#1a1d24">{escape(t)}</text>')
 
 # A 欄：來源
-y = 120
+y = TOP
 A1y = y; A1h = box(AX, y, AW, '聚會錄音', ['Drive 聚會錄音資料夾', '同工上傳，檔名開頭要有日期', '例：2026-07-25 講題(講員).mp3'], BLUE); y += A1h + 18
 A2y = y; A2h = box(AX, y, AW, '預查文件', ['Drive 預查資料夾 → 書卷子資料夾', '主領週三晚上上傳（Word／PDF／PPT）', '經 LINE 小幫手傳的檔名會變成', '　日期_時間_傳送者_原檔名'], GREEN); y += A2h + 18
 A3y = y; A3h = box(AX, y, AW, '每月聚會安排表', ['Drive「05安排表」', '<民國年><月>聚會安排表.xlsx', '週三那列：進度、預查、領會'], GREEN); y += A3h + 18
 A4y = y; A4h = box(AX, y, AW, '設定試算表（兩本）', ['查經聚會轉檔紀錄 › Config', '　Meet 連結、卡片文字、範本連結', 'LINE 小幫手那本 › Config', '　Gemini 指示、講員清單、略過關鍵字', '改完 1 分鐘生效，不用重新部署'], GRAY)
 
 # B 欄：Worker
-BY = 112
-add(f'<rect x="{BX}" y="{BY}" width="{BW}" height="{800 - BY}" fill="#f1f3f7" stroke="#b9c2d4" rx="8"/>')
+BY = TOP - 8
+add(f'<rect x="{BX}" y="{BY}" width="{BW}" height="{TOP + 680 - BY}" fill="#f1f3f7" stroke="#b9c2d4" rx="8"/>')
 add(f'<text x="{BX + 14}" y="{BY + 22}" font-size="14.5" font-weight="700" fill="#1a1d24">Cloudflare Worker：church-meeting-api</text>')
 add(f'<text x="{BX + 14}" y="{BY + 42}" font-size="12" fill="#5c6270">排程每天 06:30 · 12:30 · 16:00 · 21:30，每次處理一份</text>')
 IX, IW = BX + 15, BW - 30
@@ -76,7 +78,7 @@ B4y = y; B4h = box(IX, y, IW, '安排表匯入', ['每週一重匯本月與下�
 B5y = y; B5h = box(IX, y, IW, '網頁服務', ['提供兩個畫面的資料；邀請頁整頁在這裡產生'], GRAY)
 
 # C 欄：資料
-y = 120
+y = TOP
 C0y = y; C0h = box(CX, y, CW, 'Gemini（Google AI）', ['整理錄音：設定檔的 GEMINI_MODEL', '　目前 gemini-flash-latest，每天次數有限', '抽問題討論（規則抓不到時）：', '　gemini-3.5-flash-lite，額度另計'], GOLD); y += C0h + 22
 C1y = y; C1h = box(CX, y, CW, 'Notion「聚會紀錄」資料庫', ['唯一正本，也是後台', '聚會日期、類型、主題、講員', '內文：AI 整理或預查文字', '錄音、預查、完整文件連結', '✎ 人工校對、改日期、改講員', '✎ 狀態：草稿→已發布；傳錯→不採用'], DARK, bold_first=True); y += C1h + 18
 C2y = y; C2h = box(CX, y, CW, '試算表「查經聚會轉檔紀錄」', ['安排表分頁：系統匯入', '　✎ 人工修正欄有填就用它', '問題討論分頁：討論日期、題目', '　✎ 可直接改題目、刪列、加列'], DARK); y += C2h + 18
@@ -84,7 +86,7 @@ C3y = y; C3h = box(CX, y, CW, 'KV（暫存）', ['轉錄排隊：聚會頁按「
 C4y = y; C4h = box(CX, y, CW, '心得回饋（另一本試算表，GAS）', ['聚會頁「心得回饋」的留言'], GRAY)
 
 # D 欄：畫面
-D1y = 120
+D1y = TOP
 D1h = box(DX, D1y, DW, '① 聚會紀錄網站', ['tjc-km.github.io/liming-meeting', '行事曆（日／週／月）', '　Notion 紀錄＋Drive 還沒轉的檔', '聚會頁', '　AI 整理（每次先顯示聲明）', '　錄音播放、完整文件', '　當晚查經進度 ← 安排表分頁', '　心得回饋；按鈕：轉錄排隊、重試', '讀者：弟兄姊妹（可切大字版）'], BLUE)
 D2y = D1y + D1h + 44
 D2h = box(DX, D2y, DW, '② 查經邀請頁', ['study.liming-tjc.org（每週貼同一個連結）', '日期：自動算接下來的週三', '加入 Google Meet ← Config', '本週進度・領會 ← 安排表分頁', '預查提供的問題討論 ← 問題討論分頁', '上週預查文件 ← Notion', '　13 天內最近一筆，跳過「不採用」', '純文字大字版 → 聚會頁', 'LINE 卡片、預查範本 ← Config', '讀者：LINE 群組裡點連結的人'], GREEN)
