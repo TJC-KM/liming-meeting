@@ -1939,6 +1939,17 @@ async function getKnownSpeakers(env) {
 
 function parseStudyFilename(name, knownSpeakers) {
   knownSpeakers = knownSpeakers || [];
+
+  // 經 LINE 小幫手傳上來的檔，檔名是「yyyyMMdd_HHmmss_傳送者_原檔名」（較早的只有 HHmmss）。
+  // 主題照原檔名解析；原檔名沒寫講員，就用傳送者，對得到講員清單時補上職稱（林信得 → 林信得弟兄）。
+  // 有人事後手動改成標準檔名時不會符合這個格式，照下面的規則走。
+  const lineSaved = name.replace(/\.(docx|pdf|doc|pptx|ppt)$/i, '').match(/^(?:\d{8}_)?\d{6}_([^_]+)_(.+)$/);
+  if (lineSaved) {
+    const inner = parseStudyFilename(lineSaved[2], knownSpeakers);
+    if (inner.speaker) return inner;
+    const sender = lineSaved[1].trim();
+    return { topic: inner.topic, speaker: knownSpeakers.find(sp => sp.startsWith(sender)) || sender };
+  }
   const base = name.replace(/\.(docx|pdf|doc|pptx|ppt)$/i, '')
     // 去掉開頭流水號：「16.士師記第13章預查」的「16.」，以及沒有分隔符的「01路得記導讀」。
     // 沒分隔符時只吃 1~2 位數且後面不接數字，「2026年度…」才不會被咬掉前兩位。
