@@ -3672,6 +3672,12 @@ function driveDownloadUrl(u) {
 // 撈不到就整塊不顯示，頁面仍然有 Google Meet 按鈕可用。
 const STUDY_PROGRESS_MAX_AGE_DAYS = 13;   // 13 天：容得下幾天誤差，但擋得住「整整早一週」的文件
 
+// Notion「狀態」設成這個值的預查，邀請頁不採用（不挑它當上週預查文件、它的題目也不顯示）。
+// 紀錄本身留著，cron 才不會把同一份檔再轉一次；行事曆上照樣看得到（2026-11-17 使用者：
+// 「Notion 轉檔沒關係，重點是 study 排除」）。例：王賽特傳道提早傳、內容也不準的撒上三。
+const STUDY_EXCLUDED_STATUS = '不採用';
+
+// 回傳 { last, excludedIds }：excludedIds 是同一段時間裡被標成不採用的紀錄，題目要一起濾掉
 async function findLatestStudyBefore(env, dateStr) {
   const windowStart = new Date(Date.parse(dateStr + 'T00:00:00Z') - STUDY_PROGRESS_MAX_AGE_DAYS * 86400000)
     .toISOString().slice(0, 10);
@@ -3686,12 +3692,14 @@ async function findLatestStudyBefore(env, dateStr) {
           { property: '聚會日期', date: { on_or_after: windowStart } },
         ] },
         sorts: [{ property: '聚會日期', direction: 'descending' }],
-        page_size: 1,
+        page_size: 10,
       }),
     });
-    const p = (r.results || [])[0];
-    if (!p) return null;
-    return {
+    const pages = r.results || [];
+    const excludedIds = pages.filter(x => x.properties['狀態']?.select?.name === STUDY_EXCLUDED_STATUS).map(x => x.id);
+    const p = pages.find(x => !excludedIds.includes(x.id));
+    if (!p) return { last: null, excludedIds };
+    return { excludedIds, last: {
       id: p.id,
       topic: getTitle(p.properties['聚會主題']),
       speaker: getRichText(p.properties['講員']),
@@ -3699,10 +3707,10 @@ async function findLatestStudyBefore(env, dateStr) {
       // 「完整文件」PDF（worker 從 Word/PPT 轉出，PDF 直接沿用原檔）。
       // 沒有就退回預查原檔 —— Drive 的 /preview 對 docx/pptx/pdf 都能渲染。
       docUrl: p.properties['投影片']?.url || p.properties['預查資料連結']?.url || null,
-    };
+    } };
   } catch (e) {
     console.warn('[invite] 查上週預查失敗:', e.message);
-    return null;
+    return { last: null, excludedIds: [] };
   }
 }
 
@@ -3764,8 +3772,10 @@ async function renderInvitePage(env, url, rawDate) {
   const timeLabel = formatTimeLabel(cfg.time);
   // 關掉時連查都不查 —— 省請求，也確保錯的資料不會從別的地方漏出來
   const sched = cfg.hideLast ? null : await getScheduleEntry(env, dateStr);
-  const last = cfg.hideLast ? null : await findLatestStudyBefore(env, dateStr);
-  const questions = cfg.hideLast ? [] : await getDiscussionQuestions(env, dateStr);
+  const found = cfg.hideLast ? { last: null, excludedIds: [] } : await findLatestStudyBefore(env, dateStr);
+  const last = found.last;
+  const questions = cfg.hideLast ? []
+    : (await getDiscussionQuestions(env, dateStr)).filter(q => !found.excludedIds.includes(q.source));
   if (cfg.hideLast) console.log('[invite] STUDY_HIDE_LAST 開啟，不顯示本週進度');
 
   // 卡片：固定網址不能寫日期（LINE 只抓一次，會永遠停在第一次那天）
